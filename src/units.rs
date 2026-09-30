@@ -78,3 +78,28 @@ pub fn render(project: &Path) -> String {
     }
     all.iter().map(|u| format!("{}: {} ({}, since {}){}", u.unit, u.holder, u.state, u.since, if u.note.is_empty() { String::new() } else { format!(" — {}", u.note) })).collect::<Vec<_>>().join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_the_file_by_hand_or_by_tackle() {
+        let dir = std::env::temp_dir().join(format!("tackle-units-{}", uuid::Uuid::new_v4()));
+        let u = |unit: &str, holder: &str, note: &str| Unit { unit: unit.into(), holder: holder.into(), state: "working".into(), since: "2026-09-30 14:02".into(), note: note.into() };
+        upsert(&dir, u("step3", "tk-ic-1", "waits on audit | then review")).unwrap();
+        upsert(&dir, u("step4", "tk-ic-2", "")).unwrap();
+        upsert(&dir, Unit { state: "review".into(), ..u("step3", "tk-ic-1", "waits on audit | then review") }).unwrap();
+        let all = load(&dir);
+        assert_eq!(all.len(), 2);
+        assert_eq!((all[0].state.as_str(), all[0].note.as_str()), ("review", "waits on audit | then review"));
+        // A line written by hand, with a comment above it.
+        let text = std::fs::read_to_string(file(&dir)).unwrap() + "# a comment\nstep5 | tk-ic-3\n";
+        std::fs::write(file(&dir), text).unwrap();
+        let hand = load(&dir).into_iter().find(|x| x.unit == "step5").unwrap();
+        assert_eq!((hand.holder.as_str(), hand.state.as_str()), ("tk-ic-3", "working"));
+        assert!(remove(&dir, "step4").unwrap());
+        assert!(!remove(&dir, "nope").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

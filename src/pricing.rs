@@ -42,3 +42,21 @@ pub fn cost(model: &str, usage: &Value) -> Option<f64> {
             + w5m * r.input * 1.25,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prices_a_haiku_message() {
+        let usage = serde_json::json!({
+            "input_tokens": 10, "output_tokens": 545, "cache_read_input_tokens": 33275,
+            "cache_creation_input_tokens": 3222,
+            "cache_creation": { "ephemeral_1h_input_tokens": 3222, "ephemeral_5m_input_tokens": 0 }
+        });
+        let c = cost("claude-haiku-4-5-20251001", &usage).unwrap();
+        let want = (10.0 * 1.0 + 545.0 * 5.0 + 33275.0 * 0.10 + 3222.0 * 2.0) / 1e6;
+        assert!((c - want).abs() < 1e-12);
+        assert!(cost("some-other-model", &usage).is_none());
+    }
+}

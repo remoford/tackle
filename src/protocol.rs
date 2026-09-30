@@ -70,3 +70,25 @@ pub fn lookup(topic: &str) -> String {
         None => format!("No topic matches {:?}. Topics:\n{}", topic, list()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_sections_by_plain_words() {
+        let head = |q: &str| lookup(q).lines().next().unwrap_or_default().to_string();
+        assert_eq!(head("how do I keep my state file"), "## The state file");
+        assert_eq!(head("handover"), "## Clearing and restarting");
+        assert_eq!(head("am I stale"), "## Reading and staleness");
+        assert_eq!(head("who may clear me"), "## Authority");
+        assert!(lookup("zebra").starts_with("No topic matches"));
+        assert!(lookup("").contains("Topics (ask for any by name)"));
+    }
+
+    #[test]
+    fn code_blocks_stay_inside_their_section() {
+        assert!(lookup("state file").contains("BETWEEN UNITS <commit>"));
+        assert!(lookup("assignments").contains("# unit | holder | state | since | note"));
+    }
+}

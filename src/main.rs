@@ -222,7 +222,7 @@ fn autostart_enabled() -> bool {
 fn set_autostart(on: bool) -> Result<(), String> {
     let out = if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        reg(&["add", RUN_KEY, "/v", "tackle", "/t", "REG_SZ", "/d", &format!("\"{}\"", exe.display()), "/f"])
+        reg(&["add", RUN_KEY, "/v", "tackle", "/t", "REG_SZ", "/d", &format!("\"{}\" --tray", exe.display()), "/f"])
     } else {
         reg(&["delete", RUN_KEY, "/v", "tackle", "/f"])
     };
@@ -247,6 +247,7 @@ struct Form {
     locks_open: bool,
     usage_open: bool,
     traffic_open: bool,
+    settings_open: bool,
     preset: String,
     lock_words: String,
 }
@@ -258,6 +259,8 @@ struct App {
     _tray: Option<tray_icon::TrayIcon>,
     form: Form,
     focus_term: bool,
+    /// Launched at sign-in with --tray: hide to the tray on the first frame.
+    start_hidden: bool,
     /// A selection in the terminal view: (anchor, end) as (row, col).
     sel: Option<((u16, u16), (u16, u16))>,
     autostart: bool,
@@ -291,7 +294,9 @@ fn build_tray(ctx: &egui::Context, hwnd: isize) -> Option<tray_icon::TrayIcon> {
     use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     let menu = Menu::new();
     menu.append_items(&[&MenuItem::with_id("show", "Show tackle", true, None), &MenuItem::with_id("quit", "Quit tackle", true, None)]).ok()?;
-    let icon = tray_icon::Icon::from_rgba(icon::tackle(), icon::SIZE as u32, icon::SIZE as u32).ok()?;
+    // The tray wants the system's small-icon size, which grows with DPI.
+    let n = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON) }.clamp(16, 64) as usize;
+    let icon = tray_icon::Icon::from_rgba(icon::tackle(n), n as u32, n as u32).ok()?;
     let tray = TrayIconBuilder::new().with_menu(Box::new(menu)).with_menu_on_left_click(false).with_tooltip("tackle").with_icon(icon).build().ok()?;
     let c = ctx.clone();
     TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
@@ -315,6 +320,8 @@ impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         install_fonts(&cc.egui_ctx);
+        // Ctrl +/- belongs to the terminal's text size, not the whole window.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let hwnd = match cc.window_handle().map(|h| h.as_raw()) {
             Ok(RawWindowHandle::Win32(w)) => w.hwnd.get(),
             _ => 0,
@@ -326,11 +333,12 @@ impl App {
             selected: 0,
             hwnd,
             _tray: if hwnd != 0 { build_tray(&cc.egui_ctx, hwnd) } else { None },
-            form: Form { open: false, name: String::new(), project: String::new(), model: "opus".into(), role: Role::Worker, brief: String::new(), projects_open: false, project_name: String::new(), project_path: String::new(), people_open: false, locks_open: false, usage_open: false, traffic_open: false, preset: String::new(), lock_words: String::new() },
+            form: Form { open: false, name: String::new(), project: String::new(), model: "opus".into(), role: Role::Worker, brief: String::new(), projects_open: false, project_name: String::new(), project_path: String::new(), people_open: false, locks_open: false, usage_open: false, traffic_open: false, settings_open: false, preset: String::new(), lock_words: String::new() },
             sel: None,
             autostart: autostart_enabled(),
             focus_term: true,
             quitting: false,
+            start_hidden: std::env::args().any(|a| a == "--tray"),
         }
     }
 
@@ -409,6 +417,53 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("brief");
             ui.add(egui::TextEdit::multiline(&mut self.form.brief).hint_text("optional first prompt, typed in once the session is ready").desired_rows(2).desired_width(f32::INFINITY));
+        });
+    }
+
+    /// Everything adjustable, in a grid, out of the way of the top bar.
+    fn settings_panel(&mut self, ui: &mut egui::Ui, f: &mut Fleet) {
+        egui::Grid::new("settings").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("full context bar");
+            ui.add(egui::DragValue::new(&mut f.s.window).speed(10_000).range(10_000..=2_000_000).suffix(" tokens"));
+            ui.label(RichText::new("the size shown as a full bar").weak());
+            ui.end_row();
+            ui.label("clear hr at");
+            ui.add(egui::DragValue::new(&mut f.s.hr_clear_at).speed(1_000).range(0..=2_000_000).suffix(" tokens"));
+            ui.label(RichText::new("hr holds no state, so it clears on size alone; 0 = never").weak());
+            ui.end_row();
+            ui.label("clear at handover at");
+            ui.add(egui::DragValue::new(&mut f.s.others_clear_at).speed(10_000).range(0..=2_000_000).suffix(" tokens"));
+            ui.label(RichText::new("clear a session whose state file ends in BETWEEN UNITS once its context passes this; 0 = never").weak());
+            ui.end_row();
+            ui.label("cache lifetime");
+            ui.add(egui::DragValue::new(&mut f.s.cache_ttl_min).range(0..=1440).suffix(" min"));
+            ui.label(RichText::new("idle time after which a session's cache is assumed cold").weak());
+            ui.end_row();
+            ui.label("read /usage every");
+            ui.add(egui::DragValue::new(&mut f.s.usage_every_min).range(0..=240).suffix(" min"));
+            ui.label(RichText::new("on tk-hr while it is idle; 0 = never").weak());
+            ui.end_row();
+            ui.label("plan price");
+            ui.add(egui::DragValue::new(&mut f.s.plan_usd_month).range(0.0..=10_000.0).prefix("$").suffix("/month"));
+            ui.label(RichText::new("turns a share of the weekly limit into dollars").weak());
+            ui.end_row();
+            ui.label("terminal text");
+            ui.add(egui::DragValue::new(&mut f.s.term_font).range(8.0..=32.0).suffix(" pt"));
+            ui.label(RichText::new("also Ctrl + / Ctrl - / Ctrl 0 in the terminal").weak());
+            ui.end_row();
+            ui.label("alerts");
+            ui.checkbox(&mut f.s.alerts, "");
+            ui.label(RichText::new("Windows notifications when a session needs input, holds a message, compacts, or exits on its own").weak());
+            ui.end_row();
+            ui.label("start with Windows");
+            if ui.checkbox(&mut self.autostart, "").changed() {
+                if let Err(e) = set_autostart(self.autostart) {
+                    f.error = e;
+                    self.autostart = autostart_enabled();
+                }
+            }
+            ui.label(RichText::new("starts in the tray when you sign in").weak());
+            ui.end_row();
         });
     }
 
@@ -710,7 +765,7 @@ impl App {
         );
         ui.add_space(4.0);
 
-        let m = term::metrics(ui.ctx(), 13.0);
+        let m = term::metrics(ui.ctx(), f.s.term_font);
         let avail = ui.available_size();
         let cols = ((avail.x / m.cell.x).floor() as u16).max(20);
         let rows = ((avail.y / m.cell.y).floor() as u16).max(5);
@@ -748,7 +803,22 @@ impl App {
             ui.memory_mut(|mem| mem.set_focus_lock_filter(id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }));
             // With a selection, Ctrl+C copies it (like Windows Terminal); without one it
             // goes to the session as an interrupt.
-            let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
+            let mut events: Vec<egui::Event> = ui.input(|i| i.events.clone());
+            // Ctrl + / Ctrl - / Ctrl 0 change the terminal's text size instead of reaching the session.
+            events.retain(|e| match e {
+                egui::Event::Key { key, pressed, modifiers, .. } if modifiers.ctrl && matches!(key, egui::Key::Plus | egui::Key::Equals | egui::Key::Minus | egui::Key::Num0) => {
+                    if *pressed {
+                        f.s.term_font = match key {
+                            egui::Key::Minus => (f.s.term_font - 1.0).max(8.0),
+                            egui::Key::Num0 => 13.0,
+                            _ => (f.s.term_font + 1.0).min(32.0),
+                        };
+                    }
+                    false
+                }
+                egui::Event::Text(t) if ui.input(|i| i.modifiers.ctrl) && matches!(t.as_str(), "+" | "=" | "-" | "0") => false,
+                _ => true,
+            });
             let copy = self.sel.is_some() && events.iter().any(|e| matches!(e, egui::Event::Copy));
             if copy {
                 if let Some((a, b)) = self.sel.take() {
@@ -810,6 +880,9 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let fleet = self.fleet.clone();
         let mut f = fleet.lock().unwrap();
+        if std::mem::take(&mut self.start_hidden) {
+            hide_window(self.hwnd);
+        }
 
         if ctx.input(|i| i.viewport().close_requested()) {
             if QUIT.load(Ordering::SeqCst) {
@@ -844,24 +917,7 @@ impl eframe::App for App {
                 ui.toggle_value(&mut self.form.locks_open, "Locks");
                 ui.toggle_value(&mut self.form.usage_open, "Usage");
                 ui.toggle_value(&mut self.form.traffic_open, "Traffic");
-                ui.separator();
-                ui.label("window");
-                ui.add(egui::DragValue::new(&mut f.s.window).speed(10_000).range(10_000..=2_000_000)).on_hover_text("tokens shown as a full context bar");
-                ui.label("clear hr at");
-                ui.add(egui::DragValue::new(&mut f.s.hr_clear_at).speed(1_000).range(0..=2_000_000)).on_hover_text("tokens; 0 = never");
-                ui.label("clear at handover at");
-                ui.add(egui::DragValue::new(&mut f.s.others_clear_at).speed(10_000).range(0..=2_000_000))
-                    .on_hover_text("clear a session that has written BETWEEN UNITS in its state file once its context reaches this; 0 = never");
-                ui.label("cache ttl");
-                ui.add(egui::DragValue::new(&mut f.s.cache_ttl_min).range(0..=1440).suffix(" min")).on_hover_text("idle time after which a session's cache is assumed cold");
-                ui.separator();
-                ui.checkbox(&mut f.s.alerts, "alerts").on_hover_text("Windows notifications when a session needs input, holds a message, compacts, or exits on its own");
-                if ui.checkbox(&mut self.autostart, "start with Windows").changed() {
-                    if let Err(e) = set_autostart(self.autostart) {
-                        f.error = e;
-                        self.autostart = autostart_enabled();
-                    }
-                }
+                ui.toggle_value(&mut self.form.settings_open, "Settings");
                 if !f.error.is_empty() {
                     ui.separator();
                     ui.label(RichText::new(&f.error).color(Color32::from_rgb(230, 90, 90)));
@@ -888,6 +944,9 @@ impl eframe::App for App {
             if self.form.traffic_open {
                 traffic_panel(ui, &f);
             }
+            if self.form.settings_open {
+                self.settings_panel(ui, &mut f);
+            }
         });
         egui::SidePanel::left("sessions").default_width(260.0).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.session_list(ui, &mut f));
@@ -907,7 +966,14 @@ fn main() -> eframe::Result {
         hooks::run_mcp_bridge();
         return Ok(());
     }
-    let icon = egui::IconData { rgba: icon::tackle(), width: icon::SIZE as u32, height: icon::SIZE as u32 };
+    if let Some(i) = std::env::args().position(|a| a == "--write-icon") {
+        let path = std::env::args().nth(i + 1).unwrap_or_else(|| "icon.ico".into());
+        if let Err(e) = icon::write_ico(std::path::Path::new(&path)) {
+            eprintln!("{}: {}", path, e);
+        }
+        return Ok(());
+    }
+    let icon = egui::IconData { rgba: icon::tackle(64), width: 64, height: 64 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("tackle").with_inner_size([1400.0, 900.0]).with_icon(icon),
         ..Default::default()

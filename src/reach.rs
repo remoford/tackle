@@ -109,3 +109,27 @@ fn walk(file: &Path, root_dir: &Path, project: &Path, until: &Option<String>, ou
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn follows_inputs_in_order_and_stops_at_until() {
+        let dir = std::env::temp_dir().join(format!("tackle-reach-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("book/part")).unwrap();
+        let w = |p: &str, t: &str| std::fs::write(dir.join(p), t).unwrap();
+        w("book/main.tex", "\\input{a}\n% \\input{commented}\n50\\% done \\include{part/b}\n\\subfile{c.tex}\n\\input{after}\n");
+        w("book/a.tex", "A\n");
+        w("book/part/b.tex", "\\input{part/deep}\n");
+        w("book/part/deep.tex", "D\n");
+        w("book/c.tex", "C\n");
+        w("book/after.tex", "never reached\n");
+        w("book/commented.tex", "never\n");
+        let got = required(&dir, &parse_rule("book/main.tex until book/c.tex"));
+        let names: Vec<String> = got.iter().map(|p| p.rsplit('\\').next().unwrap().to_string()).collect();
+        assert_eq!(names, vec!["main.tex", "a.tex", "b.tex", "deep.tex", "c.tex"]);
+        assert_eq!(required(&dir, &parse_rule("book/main.tex")).len(), 6);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

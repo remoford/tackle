@@ -379,9 +379,7 @@ fn call(tool: &str, args: &Value, f: &mut Fleet) -> Result<String, String> {
         }
         // Small relay models condense; the reminder travels with the text itself.
         "protocol" => Ok(format!(
-            "(tk-hr: send everything below the line to the asker exactly as it is, in full, inside a code block. Do not summarise, shorten or leave out the format.)
----
-{}",
+            "(tk-hr: send everything below the line to the asker exactly as it is, in full, fenced with ~~~~ lines (it contains ``` blocks of its own). Do not summarise, shorten or leave out the format.)\n---\n{}",
             crate::protocol::lookup(&arg("topic"))
         )),
         "read_usage_now" => {

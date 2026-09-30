@@ -193,3 +193,43 @@ fn main() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool(props: Value, required: &[&str]) -> Value {
+        json!({ "name": "t", "inputSchema": { "type": "object", "properties": props, "required": required } })
+    }
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn fills_required_then_options() {
+        let t = tool(json!({ "name": { "type": "string" }, "text": { "type": "string" }, "submit": { "type": "boolean" }, "n": { "type": "integer" }, "requested_by": { "type": "string" } }), &["name", "text", "requested_by"]);
+        let a = parse_args(&t, &args(&["tk-ic-1", "hello there", "--no-submit", "--n=5"])).unwrap();
+        assert_eq!(a, json!({ "name": "tk-ic-1", "text": "hello there", "submit": false, "n": 5 }));
+        assert!(parse_args(&t, &args(&["tk-ic-1"])).unwrap_err().starts_with("missing <text>"));
+        assert!(parse_args(&t, &args(&["a", "b", "--requested-by", "x"])).is_err());
+    }
+
+    #[test]
+    fn arrays_take_the_rest_and_a_lone_value_fills_name() {
+        let keys = tool(json!({ "name": { "type": "string" }, "keys": { "type": "array" } }), &["name", "keys"]);
+        assert_eq!(parse_args(&keys, &args(&["x", "down", "enter"])).unwrap()["keys"], json!(["down", "enter"]));
+        let opt = tool(json!({ "name": { "type": "string" } }), &[]);
+        assert_eq!(parse_args(&opt, &args(&["tk-probe"])).unwrap(), json!({ "name": "tk-probe" }));
+        let words = tool(json!({ "lock_words": { "type": "array" } }), &[]);
+        assert_eq!(parse_args(&words, &args(&["--lock-words", "lake,tools/build.py"])).unwrap()["lock_words"], json!(["lake", "tools/build.py"]));
+    }
+
+    #[test]
+    fn undoes_git_bash_path_rewriting() {
+        std::env::set_var("MSYSTEM", "MINGW64");
+        std::env::set_var("EXEPATH", r"C:\Program Files\Git\bin");
+        assert_eq!(unmangle("C:/Program Files/Git/clear".into()), "/clear");
+        assert_eq!(unmangle("tk-ic-1".into()), "tk-ic-1");
+    }
+}

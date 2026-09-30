@@ -90,6 +90,8 @@ pub struct Saved {
     /// Project directory -> its reading rule, e.g. "book/main.tex until book/x.tex".
     pub reading_rules: BTreeMap<String, String>,
     pub presets: Vec<Preset>,
+    /// Text size of the terminal view, in points.
+    pub term_font: f32,
 }
 
 /// A saved way to start a session: "start a corpus worker" in one step.
@@ -130,6 +132,7 @@ impl Default for Saved {
             pull_owed: Vec::new(),
             reading_rules: BTreeMap::new(),
             presets: Vec::new(),
+            term_font: 13.0,
         }
     }
 }
@@ -178,6 +181,10 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 pub fn boot(ctx: eframe::egui::Context) -> Shared {
     let data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join("tackle");
     let mut errors = Vec::new();
+    // Logs that only grow: keep the newest half of any that passed 4 MB.
+    for f in ["actions.log", "usage.jsonl", "traffic.jsonl"] {
+        trim_log(&data.join(f), 4 << 20);
+    }
     let _ = std::fs::create_dir_all(data.join(HR_DIR));
     if let Err(e) = std::fs::write(data.join(HR_DIR).join("CLAUDE.md"), HR_CLAUDE_MD) {
         errors.push(format!("hr CLAUDE.md: {}", e));
@@ -885,6 +892,17 @@ impl Fleet {
             }
         }
     }
+}
+
+/// Cuts a line-oriented log that has grown past `max` bytes down to its newest half.
+fn trim_log(path: &Path, max: u64) {
+    if std::fs::metadata(path).map(|m| m.len() <= max).unwrap_or(true) {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let lines: Vec<&str> = text.lines().collect();
+    let keep = lines[lines.len() / 2..].join("\n") + "\n";
+    let _ = std::fs::write(path, keep);
 }
 
 pub fn key(p: &Path) -> String {

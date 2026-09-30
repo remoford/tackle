@@ -238,3 +238,67 @@ pub fn report(readings: &[Reading], plan_usd_month: f64) -> String {
     }
     out.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCREEN: &str = "  Settings  Status  Config  Usage\n\n  Current session\n  ██████████████▌                                    31% used\n  Resets 6:40pm (America/New_York)\n\n  Current week (all models)\n  ███████████████████████████████▌                   63% used\n  Resets Oct 2, 9pm (America/New_York)\n\n  Current week (Fable)\n  ████████████████████████████████████████▌          81% used\n  Resets Oct 2, 9pm (America/New_York)\n";
+
+    #[test]
+    fn reads_every_limit() {
+        let l = parse(SCREEN);
+        let got: Vec<(&str, f64, &str)> = l.iter().map(|x| (x.title.as_str(), x.percent, x.resets.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Current session", 31.0, "6:40pm (America/New_York)"),
+                ("Current week (all models)", 63.0, "Oct 2, 9pm (America/New_York)"),
+                ("Current week (Fable)", 81.0, "Oct 2, 9pm (America/New_York)"),
+            ]
+        );
+    }
+
+    #[test]
+    fn understands_reset_times() {
+        use chrono::Timelike;
+        let t = parse_reset("6:40pm (America/New_York)").unwrap();
+        assert_eq!((t.hour(), t.minute()), (18, 40));
+        assert!(t > Local::now());
+        let d = parse_reset("Oct 2, 9pm (America/New_York)").unwrap();
+        assert_eq!((d.month(), d.day(), d.hour()), (10, 2, 21));
+        assert_eq!(parse_reset("Mar 14 at 12pm").unwrap().hour(), 12);
+        assert!(parse_reset("soon").is_none());
+    }
+
+    fn reading(mins: i64, pct: f64, costs: &[(&str, f64)]) -> Reading {
+        Reading {
+            at: Local::now() - CDuration::minutes(60 - mins),
+            limits: vec![Limit { title: WEEK.into(), percent: pct, resets: String::new(), resets_at: None }],
+            sessions: BTreeMap::new(),
+            costs: costs.iter().map(|(n, c)| (n.to_string(), *c)).collect(),
+        }
+    }
+
+    #[test]
+    fn splits_the_weekly_rise_by_spend() {
+        let r = vec![
+            reading(0, 10.0, &[("a", 0.0), ("b", 0.0)]),
+            reading(10, 14.0, &[("a", 3.0), ("b", 1.0)]),
+            reading(20, 16.0, &[("a", 3.0), ("b", 1.0)]),
+        ];
+        let s = shares(&r, WEEK);
+        let get = |n: &str| s.iter().find(|x| x.0 == n).map(|x| (x.1, x.2)).unwrap();
+        assert!((get("a").0 - 3.0).abs() < 1e-9 && (get("a").1 - 3.0).abs() < 1e-9);
+        assert!((get("b").0 - 1.0).abs() < 1e-9);
+        assert!((get("outside tackle").0 - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_reset_starts_the_shares_again() {
+        let r = vec![reading(0, 60.0, &[("a", 0.0)]), reading(10, 70.0, &[("a", 5.0)]), reading(20, 1.0, &[("a", 5.0)]), reading(30, 3.0, &[("a", 6.0)])];
+        let s = shares(&r, WEEK);
+        assert_eq!(s.len(), 1);
+        assert!((s[0].1 - 2.0).abs() < 1e-9);
+    }
+}

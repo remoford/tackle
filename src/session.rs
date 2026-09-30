@@ -251,6 +251,12 @@ impl Transcript {
     }
 }
 
+/// The "- " lines under "rulings not yet in CLAUDE.md" in a state file.
+pub fn rulings_pending(state: &str) -> usize {
+    let mut lines = state.lines().skip_while(|l| !l.trim_start().to_lowercase().starts_with("rulings not yet in claude.md")).skip(1);
+    lines.by_ref().take_while(|l| l.trim_start().starts_with('-') || l.starts_with("  ")).filter(|l| l.trim_start().starts_with('-')).count()
+}
+
 /// A path relative to the session's directory when it is inside it.
 pub fn short_path(path: &str, cwd: &Path) -> String {
     let base = cwd.display().to_string().to_lowercase().replace('/', "\\");
@@ -840,9 +846,7 @@ impl Session {
         }
         // "15:05 BETWEEN UNITS <commit>" or "BETWEEN UNITS <commit>"
         self.doing.between_units = last.find("BETWEEN UNITS").map(|i| last[i + "BETWEEN UNITS".len()..].trim().to_string());
-        // The "- " lines under "rulings not yet in CLAUDE.md".
-        let mut lines = text.lines().skip_while(|l| !l.trim_start().to_lowercase().starts_with("rulings not yet in claude.md")).skip(1);
-        self.doing.rulings_pending = lines.by_ref().take_while(|l| l.trim_start().starts_with('-') || l.starts_with("  ")).filter(|l| l.trim_start().starts_with('-')).count();
+        self.doing.rulings_pending = rulings_pending(&text);
     }
 
     /// Catches prompts that come before any hook fires, like Claude's folder-trust
@@ -922,5 +926,37 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.child.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_ranges_merge_and_complete() {
+        let mut m = ReadMark { mtime_ms: 0, lines: 3000, ranges: Vec::new() };
+        m.add(1, 2000);
+        assert!(!m.complete());
+        m.add(2500, 3000);
+        assert_eq!(m.ranges, vec![(1, 2000), (2500, 3000)]);
+        m.add(2001, 2499);
+        assert_eq!(m.ranges, vec![(1, 3000)]);
+        assert!(m.complete());
+    }
+
+    #[test]
+    fn counts_pending_rulings() {
+        let state = "session: tk-ic-1\nrulings not yet in CLAUDE.md (word for word, dated):\n- one\n- two\n  continued\n\nopen questions:\n- not a ruling\n";
+        assert_eq!(rulings_pending(state), 2);
+        assert_eq!(rulings_pending("nothing here"), 0);
+    }
+
+    #[test]
+    fn short_paths_and_clipping() {
+        assert_eq!(short_path(r"c:\work\ic\book\a.tex", Path::new(r"C:\work\ic")), r"book\a.tex");
+        assert_eq!(short_path(r"d:\elsewhere\x.tex", Path::new(r"C:\work\ic")), r"d:\elsewhere\x.tex");
+        assert_eq!(clip("a  b\n c", 10), "a b c");
+        assert_eq!(clip("abcdef", 3), "abc…");
     }
 }
