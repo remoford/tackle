@@ -1,7 +1,7 @@
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -62,9 +62,10 @@ pub struct Record {
     pub claude_id: String,
     #[serde(default)]
     pub rc_url: String,
-    /// The commit its CLAUDE.md imports were loaded at (its read).
+    /// Every file it has read with the Read tool since it last started or cleared, as it
+    /// was when read. A file that has changed since is stale for this session.
     #[serde(default)]
-    pub read_commit: Option<String>,
+    pub reads: BTreeMap<String, ReadMark>,
     /// A compacted session is dead: it may only be started fresh.
     #[serde(default)]
     pub compacted: bool,
@@ -75,13 +76,31 @@ pub struct Record {
 
 impl Record {
     pub fn new(name: String, role: Role, cwd: PathBuf, model: String, manager: Option<String>) -> Record {
-        Record { tid: uuid::Uuid::new_v4().to_string(), name, role, cwd, model, manager, claude_id: String::new(), rc_url: String::new(), read_commit: None, compacted: false, cost_usd: 0.0 }
+        Record { tid: uuid::Uuid::new_v4().to_string(), name, role, cwd, model, manager, claude_id: String::new(), rc_url: String::new(), reads: BTreeMap::new(), compacted: false, cost_usd: 0.0 }
     }
 
     /// Where the session keeps its state file (see docs/orchestration.md).
     pub fn state_file(&self) -> PathBuf {
         self.cwd.join("orchestration").join("state").join(format!("{}.md", self.name))
     }
+}
+
+/// A file as a session read it: its modification time then, in milliseconds. The file is
+/// stale for that session once its modification time is newer.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReadMark {
+    pub mtime_ms: u64,
+}
+
+impl ReadMark {
+    pub fn of(path: &Path) -> Option<ReadMark> {
+        Some(ReadMark { mtime_ms: mtime_ms(path)? })
+    }
+}
+
+fn mtime_ms(path: &Path) -> Option<u64> {
+    let t = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64)
 }
 
 /// How to launch: a new Claude session, or `--resume` of the recorded one.
@@ -187,6 +206,12 @@ impl Transcript {
     }
 }
 
+/// A path relative to the session's directory when it is inside it.
+pub fn short_path(path: &str, cwd: &Path) -> String {
+    let base = cwd.display().to_string().to_lowercase().replace('/', "\\");
+    path.strip_prefix(&base).map(|p| p.trim_start_matches('\\').to_string()).unwrap_or_else(|| path.to_string())
+}
+
 /// A one-line, length-capped rendering of text for hr to read cheaply.
 pub fn clip(s: &str, max: usize) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -256,8 +281,8 @@ pub struct Doing {
     pub state_changed: Option<Instant>,
     /// Set when the state file's last line is "BETWEEN UNITS <commit>".
     pub between_units: Option<String>,
-    /// Commits landed since its read that it did not make.
-    pub stale: Option<usize>,
+    /// Files it read that have changed since, other than by its own edits.
+    pub stale: Vec<String>,
     /// A wake after a gap: (gap in seconds, context at the time), measured when the next
     /// usage arrives.
     pub wake: Option<(u64, u64)>,
@@ -346,7 +371,7 @@ impl Session {
             Launch::Resume if !rec.claude_id.is_empty() => cmd.args(["--resume", &rec.claude_id]),
             _ => {
                 rec.claude_id = uuid::Uuid::new_v4().to_string();
-                rec.read_commit = None;
+                rec.reads.clear();
                 rec.compacted = false;
                 cmd.args(["--session-id", &rec.claude_id]);
             }
@@ -520,12 +545,10 @@ impl Session {
         if !self.pending.is_empty() {
             out.push(format!("queued: {}", self.pending.join(" ")));
         }
-        let mut k = format!("context: {} tokens, cost so far ${:.2} at API prices", self.usage.context, self.rec.cost_usd);
-        if let Some(c) = &self.rec.read_commit {
-            k += &format!("; read at {}", &c[..c.len().min(10)]);
-        }
-        if let Some(n) = d.stale {
-            k += &format!(", stale by {} outside commits", n);
+        let mut k = format!("context: {} tokens, cost so far ${:.2} at API prices; has read {} files", self.usage.context, self.rec.cost_usd, self.rec.reads.len());
+        if !d.stale.is_empty() {
+            let names: Vec<String> = d.stale.iter().take(6).map(|p| short_path(p, &self.rec.cwd)).collect();
+            k += &format!(", {} changed since it read them: {}{}", d.stale.len(), names.join(", "), if d.stale.len() > 6 { ", ..." } else { "" });
         }
         if self.contaminated {
             k += ", COMPACTED";
@@ -594,10 +617,10 @@ impl Session {
                         self.history.push((now, 0));
                     }
                 }
-                // A fresh start or a clear loads CLAUDE.md and its imports from disk now.
+                // A fresh start or a clear begins with nothing read.
                 if matches!(source, "startup" | "clear") {
-                    self.rec.read_commit = crate::git::head(&self.rec.cwd);
-                    d.stale = Some(0);
+                    self.rec.reads.clear();
+                    d.stale.clear();
                     d.between_units = None;
                 }
                 if source == "compact" {
@@ -629,6 +652,19 @@ impl Session {
                 }
             }
             "PostToolUse" | "PostToolUseFailure" => {
+                // What it has read, and its own edits to what it read (those don't make it stale).
+                if v["hook_event_name"] == "PostToolUse" {
+                    let file = v["tool_input"]["file_path"].as_str().or(v["tool_input"]["notebook_path"].as_str()).unwrap_or_default();
+                    let tool = v["tool_name"].as_str().unwrap_or_default();
+                    let key = file.to_lowercase().replace('/', "\\");
+                    let own_edit = matches!(tool, "Edit" | "Write" | "MultiEdit" | "NotebookEdit") && self.rec.reads.contains_key(&key);
+                    if !file.is_empty() && (tool == "Read" || own_edit) {
+                        if let Some(m) = ReadMark::of(Path::new(file)) {
+                            self.rec.reads.insert(key.clone(), m);
+                            d.stale.retain(|p| *p != key);
+                        }
+                    }
+                }
                 self.activity = Activity::Busy;
                 d.tool = None;
                 d.turn_tools += 1;
@@ -710,6 +746,18 @@ impl Session {
             self.activity = Activity::Waiting;
             self.doing.notice = "folder trust: Claude asks whether to trust this project directory (answer in tackle, or ask tk-hr)".into();
         }
+    }
+
+    /// A file it read is stale once its modification time is newer than when it read it
+    /// (its own edits move that time forward), or once the file is gone.
+    pub fn check_stale(&mut self) {
+        self.doing.stale = self
+            .rec
+            .reads
+            .iter()
+            .filter(|(path, mark)| mtime_ms(Path::new(path.as_str())).map(|now| now > mark.mtime_ms).unwrap_or(true))
+            .map(|(path, _)| path.clone())
+            .collect();
     }
 
     /// Drops background jobs whose processes have all ended.

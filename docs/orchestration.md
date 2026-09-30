@@ -23,7 +23,7 @@ it short: every replacement reads it right after a full read of the corpus.
 ```
 session: tk-ic-1   tackle id: <TACKLE_ID>
 role: worker   manager: tk-ic-orch
-read: <commit> at 2026-09-30 14:02, 781k tokens
+read: book/main.tex and part II (chapters 4-6), done 14:02, 781k tokens
 unit: <one line: which unit, from the book>
 context: 912k (last known)
 
@@ -62,9 +62,12 @@ Rules:
   and its context has passed the "clear at handover" size set in tackle.
 - A clear costs a full read (about 680k–800k tokens and 8–9 minutes on the ic corpus), so
   reuse a session while it has room.
-- **Staleness**: tackle records the commit each session's read was taken at and shows
-  "stale by N" for commits landed since that the session did not make itself. It does not
-  clear on corpus changes: the manager batches them and decides.
+- **Staleness**: tackle records every file a session reads with the Read tool, with the
+  file's modification time. Once a file's modification time is newer, it is stale for
+  that session (its own edits don't count). tackle shows how many read files changed and
+  which. It does not clear on corpus changes: the manager batches them and decides.
+- A `/clear` drops everything the session has read; it then reads what its next task
+  needs. The state file should say what that is.
 - **Compaction is never allowed.** Sessions run with auto-compaction and `/compact`
   disabled, and a hook refuses compaction. A session that compacts anyway is stopped and
   may only come back as a fresh session told to resume from its state file, never resumed

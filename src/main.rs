@@ -2,7 +2,6 @@
 #![windows_subsystem = "windows"]
 
 mod fleet;
-mod git;
 mod hooks;
 mod icon;
 mod mcp;
@@ -474,8 +473,9 @@ impl App {
                         if !s.pending.is_empty() {
                             ui.label(RichText::new(format!("queued {}", s.pending.join(" "))).weak());
                         }
-                        if let Some(n) = s.doing.stale.filter(|n| *n > 0) {
-                            ui.label(RichText::new(format!("stale by {}", n)).color(Color32::from_rgb(230, 170, 60)));
+                        if !s.doing.stale.is_empty() {
+                            ui.label(RichText::new(format!("{} read files changed", s.doing.stale.len())).color(Color32::from_rgb(230, 170, 60)))
+                                .on_hover_text(s.doing.stale.iter().map(|p| session::short_path(p, &s.rec.cwd)).collect::<Vec<_>>().join("\n"));
                         }
                         if let Some(m) = s.cold(ttl) {
                             ui.label(RichText::new(format!("cold {}m", m)).color(Color32::from_rgb(120, 170, 255)));
@@ -579,10 +579,9 @@ impl App {
             });
         });
         let manager = s.rec.manager.clone().unwrap_or_else(|| "human".into());
-        let read = s.rec.read_commit.as_deref().map(|c| &c[..c.len().min(10)]).unwrap_or("-");
-        let mut line = format!("manager {}  ·  read at {}", manager, read);
-        if let Some(n) = s.doing.stale {
-            line += &format!(" (stale by {})", n);
+        let mut line = format!("manager {}  ·  has read {} files", manager, s.rec.reads.len());
+        if !s.doing.stale.is_empty() {
+            line += &format!(" ({} changed since)", s.doing.stale.len());
         }
         if !s.doing.state_line.is_empty() {
             line += &format!("  ·  state: {}", session::clip(&s.doing.state_line, 80));

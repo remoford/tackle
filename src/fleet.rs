@@ -114,8 +114,6 @@ pub struct Fleet {
     pub denials: VecDeque<Denial>,
     /// Recent entries of actions.log, newest last.
     pub log: VecDeque<String>,
-    /// Commit hash -> tid of the session that made it (commits.json).
-    commits: BTreeMap<String, String>,
     /// Plan-usage readings, oldest first (usage.jsonl, last 8 days).
     pub usage: Vec<crate::usage::Reading>,
     usage_next: Instant,
@@ -131,7 +129,7 @@ pub struct Fleet {
     epoch: Instant,
     hr_restart: Option<Instant>,
     last_slow: Instant,
-    last_git: Instant,
+    last_stale_check: Instant,
     last_saved: String,
     ctx: eframe::egui::Context,
 }
@@ -163,7 +161,6 @@ pub fn boot(ctx: eframe::egui::Context) -> Shared {
     // For the `tk` command line.
     let _ = std::fs::write(data.join("port"), port.to_string());
     let s: Saved = read_json(&data.join("fleet.json")).unwrap_or_default();
-    let commits = read_json(&data.join("commits.json")).unwrap_or_default();
     let dormant = s.sessions.clone();
     let cutoff = chrono::Local::now() - chrono::Duration::days(8);
     let usage: Vec<crate::usage::Reading> = std::fs::read_to_string(data.join("usage.jsonl"))
@@ -181,7 +178,6 @@ pub fn boot(ctx: eframe::egui::Context) -> Shared {
         lock: None,
         denials: VecDeque::new(),
         log: VecDeque::new(),
-        commits,
         usage,
         usage_next: Instant::now() + Duration::from_secs(30),
         usage_capture: None,
@@ -194,7 +190,7 @@ pub fn boot(ctx: eframe::egui::Context) -> Shared {
         epoch: Instant::now(),
         hr_restart: None,
         last_slow: Instant::now(),
-        last_git: Instant::now(),
+        last_stale_check: Instant::now(),
         last_saved: String::new(),
         ctx,
     }));
@@ -586,17 +582,6 @@ impl Fleet {
                 }
             }
         }
-        // Remember who made each commit, so staleness counts only outside commits.
-        let command = body["tool_input"]["command"].as_str().unwrap_or_default();
-        if body["tool_name"] == "Bash" && body["hook_event_name"] == "PostToolUse" && command.contains("git") && command.contains("commit") {
-            if let Some(s) = self.find_ref(name) {
-                if let Some(head) = crate::git::head(&s.rec.cwd) {
-                    let tid = s.rec.tid.clone();
-                    self.commits.insert(head, tid);
-                    let _ = std::fs::write(self.data.join("commits.json"), serde_json::to_string(&self.commits).unwrap_or_default());
-                }
-            }
-        }
     }
 
     pub fn release_lock(&mut self, by: &str) {
@@ -621,12 +606,12 @@ impl Fleet {
     fn tick(&mut self) {
         let now = self.now();
         let slow = self.last_slow.elapsed() >= Duration::from_secs(3);
-        let git = self.last_git.elapsed() >= Duration::from_secs(20);
+        let stale_check = self.last_stale_check.elapsed() >= Duration::from_secs(20);
         if slow {
             self.last_slow = Instant::now();
         }
-        if git {
-            self.last_git = Instant::now();
+        if stale_check {
+            self.last_stale_check = Instant::now();
         }
         let alive: std::collections::HashSet<u32> = if slow { crate::procs::snapshot().iter().map(|p| p.pid).collect() } else { Default::default() };
         let mut logs = Vec::new();
@@ -643,12 +628,8 @@ impl Fleet {
                     s.rec.rc_url = rc_url(&s.parser.lock().unwrap());
                 }
             }
-            if git && s.activity != Activity::Exited {
-                if let Some(read) = s.rec.read_commit.clone() {
-                    if let Some(new) = crate::git::since(&s.rec.cwd, &read) {
-                        s.doing.stale = Some(new.iter().filter(|h| self.commits.get(*h) != Some(&s.rec.tid)).count());
-                    }
-                }
+            if stale_check && s.activity != Activity::Exited {
+                s.check_stale();
             }
             // Rule 3: a compacted context is contaminated. Stop it; it may only come back fresh.
             if s.contaminated && !s.rec.compacted {

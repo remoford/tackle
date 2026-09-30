@@ -179,8 +179,8 @@ pub fn tools() -> Vec<Value> {
 
 fn session_line(f: &Fleet, s: &crate::session::Session) -> String {
     let mut line = format!("{} ({} {}): {}, {}k, ${:.2}", s.rec.name, s.rec.role.label(), s.rec.model, s.state_phrase(), s.usage.context / 1000, s.rec.cost_usd);
-    if let Some(n) = s.doing.stale.filter(|n| *n > 0) {
-        line += &format!(", stale by {}", n);
+    if !s.doing.stale.is_empty() {
+        line += &format!(", {} of {} read files changed", s.doing.stale.len(), s.rec.reads.len());
     }
     if let Some(m) = s.cold(f.s.cache_ttl_min) {
         line += &format!(", cold {}m", m);

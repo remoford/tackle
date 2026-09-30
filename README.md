@@ -35,8 +35,8 @@ sessions need in context word for word. That brings rules a normal harness doesn
 - **Clear only at a handover.** A full re-read costs hundreds of thousands of tokens, so
   a session is cleared only when its manager asks, or once it has written "between units"
   in its state file.
-- **Show staleness; let the manager decide.** tackle records the commit each session
-  read and shows how many outside commits it hasn't seen.
+- **Show staleness; let the manager decide.** tackle records every file each session
+  has read and shows which of them have changed since.
 
 ## What it does
 
@@ -44,8 +44,8 @@ sessions need in context word for word. That brings rules a normal harness doesn
   with a built-in terminal view, so every session is also reachable from your phone or
   claude.ai. Sessions are named `tk-...`.
 - Shows each session's state (busy, idle, needs input, waiting on its own background
-  build), context size over time, cache hit rate, the tool it is running, the commit it
-  read and how stale that is, and whether its cache has likely gone cold.
+  build), context size over time, cache hit rate, the tool it is running, which of the
+  files it has read have changed since, and whether its cache has likely gone cold.
 - Feeds all of that from Claude Code hooks and transcripts, not screen scraping.
 - Runs **tk-hr**, an always-on Haiku session that is tackle's interface in plain language:
   other sessions (or you, over Remote Control) ask it who is running, what a session is
@@ -66,7 +66,6 @@ sessions need in context word for word. That brings rules a normal harness doesn
 - [Claude Code](https://code.claude.com) installed and signed in (`claude` on `PATH`, or
   set `TACKLE_CLAUDE` to `claude.exe`).
 - Rust (stable) to build.
-- git, for staleness and commit tracking.
 
 ## Build and run
 

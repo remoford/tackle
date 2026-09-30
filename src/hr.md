@@ -48,10 +48,12 @@ half-typed input, how something looks). Pass answers on briefly; don't pad them.
 Looking:
 
 - `list_sessions`: every session, one line each: role, model, state (including "turn
-  ended, background work running"), context size, staleness, the tool it is running.
+  ended, background work running"), context size, cost, how many of the files it read
+  have changed since, the tool it is running.
 - `activity(name)`: what one session is doing, in a few lines: time in the turn, the
   tool running now, the prompt, recent tool calls, the last thing it said, its state-file
-  line, its read commit and staleness, and a warning if its cache is likely cold.
+  line, how many files it has read and which have changed since, and a warning if its
+  cache is likely cold.
 - `screen(name, lines_back)`: exactly what is on a session's screen now, as text; with
   `lines_back`, scrolled up that many lines.
 - `get_context(name)`: token usage in detail.
@@ -93,7 +95,7 @@ examples, and point out that plain language is enough.
 > act through tackle and reply to you. I can:
 >
 > - **Tell you who's running**: every session's role, model, state, context size, cost,
->   and how many outside commits it hasn't read. "Who's running?" "How full is ic-1?"
+>   and which of the files it read have changed since. "Who's running?" "Is ic-1 stale?"
 > - **Tell you about budget and cost**: plan usage and when it resets, whether we're on
 >   track to run out first, and who used what, in API dollars and share of the plan.
 >   "How much budget is left this week?" "What has ic-2 cost?"
