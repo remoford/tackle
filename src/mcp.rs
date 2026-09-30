@@ -57,7 +57,28 @@ fn tool(name: &str, description: &str, mut props: Value, required: &[&str], acti
     json!({ "name": name, "description": description, "inputSchema": { "type": "object", "properties": props, "required": required } })
 }
 
-fn tools() -> Vec<Value> {
+/// A call from the `tk` command line. `caller` is the tackle session the calling process
+/// runs under, if any (found from the process tree); otherwise it is the human at the
+/// machine. Either way it goes through the same checks as a call from hr.
+pub fn cli(tool: &str, args: &Value, f: &mut Fleet, caller: Option<String>) -> Value {
+    let mut args = if args.is_object() { args.clone() } else { json!({}) };
+    match caller {
+        Some(name) => {
+            args["requested_by"] = json!("cli");
+            args["requester_name"] = json!(name);
+        }
+        None => {
+            args["requested_by"] = json!("human");
+            args["requester_name"] = json!("");
+        }
+    }
+    match call(tool, &args, f) {
+        Ok(text) => json!({ "ok": true, "text": text }),
+        Err(text) => json!({ "ok": false, "text": text }),
+    }
+}
+
+pub fn tools() -> Vec<Value> {
     let name = json!({ "name": { "type": "string", "description": "session name, as in list_sessions (the tk- prefix may be left off)" } });
     let project = json!({ "project": { "type": "string", "description": "a project name from list_projects, or a directory" } });
     vec![

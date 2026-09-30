@@ -33,6 +33,7 @@ pub fn serve(listener: TcpListener, fleet: Shared) {
             let fleet = fleet.clone();
             std::thread::spawn(move || {
                 let Ok(mut writer) = stream.try_clone() else { return };
+                let peer = stream.peer_addr().map(|a| a.port()).unwrap_or(0);
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_err() {
@@ -41,6 +42,19 @@ pub fn serve(listener: TcpListener, fleet: Shared) {
                 let Ok(v) = serde_json::from_str::<Value>(&line) else { return };
                 if v.get("mcp").is_some() {
                     crate::mcp::serve(reader, writer, fleet);
+                } else if v.get("cli_tools").is_some() {
+                    let _ = writeln!(writer, "{}", json!({ "tools": crate::mcp::tools() }));
+                } else if let Some(cli) = v.get("cli") {
+                    // Who is calling: the tackle session whose process tree the caller is in, if any.
+                    let caller_pid = crate::procs::tcp_owner(peer);
+                    let mut f = fleet.lock().unwrap();
+                    let caller = caller_pid.and_then(|pid| {
+                        let all = crate::procs::snapshot();
+                        let chain = crate::procs::ancestors(&all, pid);
+                        f.sessions.iter().find(|s| s.pid.map(|p| chain.contains(&p)).unwrap_or(false)).map(|s| s.rec.name.clone())
+                    });
+                    let reply = crate::mcp::cli(cli["tool"].as_str().unwrap_or_default(), &cli["args"], &mut f, caller);
+                    let _ = writeln!(writer, "{}", reply);
                 } else if let Some(session) = v["session"].as_str() {
                     let reply = fleet.lock().unwrap().on_hook(session, &v["hook"]);
                     let _ = writeln!(writer, "{}", reply);

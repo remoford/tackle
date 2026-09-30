@@ -17,6 +17,9 @@ over Remote Control, and manages their context by hand.
 >   the wrong moment can answer a prompt you didn't mean to answer.
 > - Its locks (one writer per checkout, one build at a time) are advisory hooks. They
 >   only cover sessions tackle started, and a session can get around them.
+> - The `tk` command line has your rights unless tackle can trace the calling process
+>   back to one of its sessions. Anything else on your machine that runs `tk` acts as
+>   you.
 > - It is a personal tool built for one workflow, tested lightly, on one machine.
 >
 > If you use it anyway, use it only on repositories you can afford to lose, with a
@@ -71,6 +74,26 @@ target\release\tackle.exe
 tackle keeps its state in `%LOCALAPPDATA%\tackle`: `fleet.json` (sessions, settings,
 delegates, locks), `projects.json`, `actions.log` (every act and refusal, with who asked),
 `usage.jsonl`, and tk-hr's working directory.
+
+## Command line
+
+`tk.exe`, built alongside tackle, exposes every tool tk-hr has:
+
+```
+tk help                                  list commands
+tk help screen                           one command's arguments
+tk list-sessions
+tk activity tk-ic-1
+tk screen tk-ic-1 --lines-back 40
+tk send-keys tk-ic-1 down enter
+tk start-session ic --model sonnet --brief "..."
+tk usage
+tk set-settings --hr-clear-at 150000
+```
+
+Required arguments go in order; the rest as `--name value`. tackle decides who is
+calling from the process tree: from inside a tackle session, `tk` has that session's
+rights; from anywhere else, yours.
 
 ## Documentation
 

@@ -33,19 +33,36 @@ pub fn snapshot() -> Vec<Proc> {
     all
 }
 
-/// Every process below `root`, excluding tackle's own hook and MCP helpers and console hosts.
-pub fn descendants(all: &[Proc], root: u32) -> Vec<&Proc> {
-    let mut out: Vec<&Proc> = Vec::new();
-    let mut frontier = vec![root];
-    while let Some(pid) = frontier.pop() {
-        for p in all.iter().filter(|p| p.parent == pid && p.pid != pid) {
-            if out.iter().any(|o| o.pid == p.pid) {
-                continue;
+/// The process that owns the IPv4 TCP connection whose local end is 127.0.0.1:`port`
+/// (tackle sees it as the peer of a connection it accepted).
+pub fn tcp_owner(port: u16) -> Option<u32> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_ALL};
+    const AF_INET: u32 = 2;
+    let mut size = 0u32;
+    unsafe {
+        GetExtendedTcpTable(std::ptr::null_mut(), &mut size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+        let mut buf = vec![0u8; size as usize + 1024];
+        size = buf.len() as u32;
+        if GetExtendedTcpTable(buf.as_mut_ptr() as *mut _, &mut size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) != 0 {
+            return None;
+        }
+        let n = u32::from_ne_bytes(buf[0..4].try_into().ok()?) as usize;
+        let rows = buf.as_ptr().add(4) as *const MIB_TCPROW_OWNER_PID;
+        (0..n).map(|i| std::ptr::read_unaligned(rows.add(i))).find(|r| u16::from_be(r.dwLocalPort as u16) == port && r.dwOwningPid != std::process::id()).map(|r| r.dwOwningPid)
+    }
+}
+
+/// `pid` and its parents, nearest first.
+pub fn ancestors(all: &[Proc], pid: u32) -> Vec<u32> {
+    let mut out = vec![pid];
+    let mut cur = pid;
+    for _ in 0..64 {
+        match all.iter().find(|p| p.pid == cur) {
+            Some(p) if p.parent != 0 && !out.contains(&p.parent) => {
+                out.push(p.parent);
+                cur = p.parent;
             }
-            frontier.push(p.pid);
-            if !matches!(p.name.as_str(), "tackle.exe" | "conhost.exe" | "openconsole.exe") {
-                out.push(p);
-            }
+            _ => break,
         }
     }
     out

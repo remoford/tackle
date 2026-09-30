@@ -54,6 +54,8 @@ pub struct BuildLock {
     pub background: bool,
     /// Its PreToolUse has been answered by a PostToolUse (the background shell exists).
     pub launched: bool,
+    /// For a background build, the processes it started.
+    pub pids: Vec<u32>,
 }
 
 /// Everything tackle keeps on disk in fleet.json. Fields missing from an older file take
@@ -116,6 +118,8 @@ pub struct Fleet {
     usage_next: Instant,
     /// When /usage was typed into hr, while tackle waits to read it.
     usage_capture: Option<Instant>,
+    /// Process ids alive just before each run_in_background call, by tool_use_id.
+    launch_before: BTreeMap<String, Vec<u32>>,
     claude: PathBuf,
     settings: PathBuf,
     hr_settings: PathBuf,
@@ -153,6 +157,8 @@ pub fn boot(ctx: eframe::egui::Context) -> Shared {
     let settings = write("settings.json", hooks::write_settings(&data, "settings.json", &[]));
     let hr_settings = write("hr-settings.json", hooks::write_settings(&data, "hr-settings.json", &["mcp__tackle"]));
     let mcp_config = write("mcp.json", hooks::write_mcp_config(&data, port, HR));
+    // For the `tk` command line.
+    let _ = std::fs::write(data.join("port"), port.to_string());
     let s: Saved = read_json(&data.join("fleet.json")).unwrap_or_default();
     let commits = read_json(&data.join("commits.json")).unwrap_or_default();
     let dormant = s.sessions.clone();
@@ -176,6 +182,7 @@ pub fn boot(ctx: eframe::egui::Context) -> Shared {
         usage,
         usage_next: Instant::now() + Duration::from_secs(30),
         usage_capture: None,
+        launch_before: BTreeMap::new(),
         claude: session::find_claude(),
         settings,
         hr_settings,
@@ -467,6 +474,18 @@ impl Fleet {
             "PreToolUse" => self.check_tool(name, body),
             _ => None,
         };
+        let id = body["tool_use_id"].as_str().unwrap_or_default().to_string();
+        if event == "PreToolUse" && block.is_none() && body["tool_input"]["run_in_background"] == true {
+            self.launch_before.insert(id.clone(), crate::procs::snapshot().iter().map(|p| p.pid).collect());
+        }
+        if event == "PostToolUse" {
+            if let Some(before) = self.launch_before.remove(&id) {
+                self.record_job(name, &id, body, &before);
+            }
+        }
+        if event == "PostToolUseFailure" {
+            self.launch_before.remove(&id);
+        }
         if matches!(event.as_str(), "PostToolUse" | "PostToolUseFailure") {
             self.after_tool(name, body);
         }
@@ -526,10 +545,29 @@ impl Fleet {
                 since: Instant::now(),
                 background: body["tool_input"]["run_in_background"] == true,
                 launched: false,
+                pids: Vec::new(),
             });
             self.add_log(format!("{}: took the build lock for {}", name, clip(command, 60)));
         }
         None
+    }
+
+    /// A background command has launched: the processes that appeared since its
+    /// PreToolUse are its job. They are orphans, so this is the only way to find them.
+    fn record_job(&mut self, name: &str, id: &str, body: &Value, before: &[u32]) {
+        let skip = ["tackle.exe", "conhost.exe", "openconsole.exe", "claude.exe", "git.exe", "tk.exe"];
+        let new: Vec<(u32, String)> = crate::procs::snapshot().into_iter().filter(|p| !before.contains(&p.pid) && !skip.contains(&p.name.as_str())).map(|p| (p.pid, p.name)).collect();
+        if new.is_empty() {
+            return;
+        }
+        if let Some(l) = &mut self.lock {
+            if l.tool_use_id == id {
+                l.pids = new.iter().map(|(p, _)| *p).collect();
+            }
+        }
+        if let Some(s) = self.find(name) {
+            s.doing.jobs.push(session::Job { command: body["tool_input"]["command"].as_str().unwrap_or_default().to_string(), since: Instant::now(), pids: new });
+        }
     }
 
     fn after_tool(&mut self, name: &str, body: &Value) {
@@ -587,7 +625,7 @@ impl Fleet {
         if git {
             self.last_git = Instant::now();
         }
-        let procs = if slow { crate::procs::snapshot() } else { Vec::new() };
+        let alive: std::collections::HashSet<u32> = if slow { crate::procs::snapshot().iter().map(|p| p.pid).collect() } else { Default::default() };
         let mut logs = Vec::new();
         for s in &mut self.sessions {
             s.check_exit();
@@ -596,7 +634,7 @@ impl Fleet {
             }
             if slow {
                 s.poll_state_file();
-                s.poll_processes(&procs);
+                s.poll_jobs(&alive);
                 s.poll_screen();
                 if s.rec.rc_url.is_empty() {
                     s.rec.rc_url = rc_url(&s.parser.lock().unwrap());
@@ -632,14 +670,10 @@ impl Fleet {
             self.add_log(l);
         }
 
-        // A background build keeps the lock until its process is gone.
+        // A background build keeps the lock until the processes it started are gone.
         if slow {
-            let words = self.s.lock_words.clone();
             let release = match &self.lock {
-                Some(l) if l.background && l.launched && l.since.elapsed() >= Duration::from_secs(5) => match self.find_ref(&l.session) {
-                    Some(s) => s.activity == Activity::Exited || !s.doing.procs.iter().any(|p| words.iter().any(|w| p.contains(w.to_lowercase().as_str()))),
-                    None => true,
-                },
+                Some(l) if l.background && l.launched => !l.pids.iter().any(|p| alive.contains(p)),
                 Some(l) if l.background => false,
                 Some(l) => self.find_ref(&l.session).map(|s| s.activity == Activity::Exited).unwrap_or(true),
                 None => false,

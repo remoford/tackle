@@ -206,6 +206,16 @@ pub fn ago(t: Instant) -> String {
     }
 }
 
+/// A background command and the processes it started. Claude's background shell detaches
+/// (its bash exits and the job is orphaned), so the job can't be found under the session's
+/// process; tackle finds it instead by diffing the process list around its launch.
+#[derive(Clone)]
+pub struct Job {
+    pub command: String,
+    pub since: Instant,
+    pub pids: Vec<(u32, String)>,
+}
+
 /// What a session is doing, from its hooks and transcript, so hr can answer "what is X
 /// doing?" without reading a whole screen.
 #[derive(Default)]
@@ -226,12 +236,8 @@ pub struct Doing {
     /// When its last turn ended: after the prompt cache expires, the next wake re-reads
     /// the whole context at full price.
     pub last_turn_end: Option<Instant>,
-    /// Commands it started with run_in_background, and when.
-    pub background: Vec<(String, Instant)>,
-    /// Processes still running under it that weren't there when it started.
-    pub background_procs: Vec<String>,
-    /// Every process under it right now, by name (what the build lock checks).
-    pub procs: Vec<String>,
+    /// Work it started with run_in_background that is still running.
+    pub jobs: Vec<Job>,
     /// The last line of its state file, and when it changed.
     pub state_line: String,
     pub state_changed: Option<Instant>,
@@ -251,9 +257,6 @@ pub struct Session {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn Child + Send + Sync>,
     pub pid: Option<u32>,
-    /// Processes under it right after it started (MCP servers and the like), so they
-    /// don't count as background work.
-    pub baseline: Option<Vec<u32>>,
     pub activity: Activity,
     pub transcript: Option<Transcript>,
     pub usage: Usage,
@@ -387,7 +390,6 @@ impl Session {
             writer,
             pid: child.process_id(),
             child,
-            baseline: None,
             activity: Activity::Starting,
             transcript: None,
             usage: Usage::default(),
@@ -459,14 +461,9 @@ impl Session {
 
     /// Its state in one phrase: busy, idle, or idle but waiting on its own background work.
     pub fn state_phrase(&self) -> String {
-        if self.activity == Activity::Idle && (!self.doing.background_procs.is_empty() || !self.doing.background.is_empty()) {
-            let what = self
-                .doing
-                .background
-                .last()
-                .map(|(c, t)| format!("{} ({})", clip(c, 50), ago(*t)))
-                .unwrap_or_else(|| self.doing.background_procs.join(", "));
-            return format!("turn ended, background work running: {}", what);
+        if self.activity == Activity::Idle && !self.doing.jobs.is_empty() {
+            let what: Vec<String> = self.doing.jobs.iter().map(|j| format!("{} ({})", clip(&j.command, 50), ago(j.since))).collect();
+            return format!("turn ended, background work running: {}", what.join("; "));
         }
         self.activity.label().to_string()
     }
@@ -615,9 +612,6 @@ impl Session {
                     }
                     None => {
                         d.tool = Some((tool_line(v), Instant::now()));
-                        if v["tool_input"]["run_in_background"] == true {
-                            d.background.push((tool_line(v), Instant::now()));
-                        }
                     }
                 }
             }
@@ -705,26 +699,9 @@ impl Session {
         }
     }
 
-    /// Looks at the processes under it: anything new since it started is background work.
-    pub fn poll_processes(&mut self, all: &[crate::procs::Proc]) {
-        let Some(pid) = self.pid else { return };
-        let under = crate::procs::descendants(all, pid);
-        self.doing.procs = under.iter().map(|p| p.name.clone()).collect();
-        match &self.baseline {
-            None => {
-                // Taken once the session is up (its MCP servers started), not at launch.
-                if !matches!(self.activity, Activity::Starting | Activity::Waiting) {
-                    self.baseline = Some(under.iter().map(|p| p.pid).collect());
-                }
-            }
-            Some(base) => {
-                let base = base.clone();
-                self.doing.background_procs = under.iter().filter(|p| !base.contains(&p.pid)).map(|p| p.name.clone()).collect();
-                if self.doing.background_procs.is_empty() && self.activity == Activity::Idle {
-                    self.doing.background.clear();
-                }
-            }
-        }
+    /// Drops background jobs whose processes have all ended.
+    pub fn poll_jobs(&mut self, alive: &std::collections::HashSet<u32>) {
+        self.doing.jobs.retain(|j| j.pids.iter().any(|(pid, _)| alive.contains(pid)));
     }
 }
 

@@ -48,6 +48,14 @@ whole corpus in context, word for word.
   `orchestration/` says who is doing it. Each session keeps
   `orchestration/state/<name>.md`, whose last line `BETWEEN UNITS <commit>` marks a
   handover. The format is in `docs/orchestration.md`.
+- **`tk` CLI** (`src/bin/tk.rs`): every MCP tool as a command, over the same port
+  (written to `%LOCALAPPDATA%	ackle\port`). tackle finds the calling process from the TCP
+  table and walks its parents: under a tk session it has that session's rights, else the
+  human's. Use it for debugging instead of going through hr, and don't spin up test
+  sessions needlessly: the user is wary of account limits.
+- **Plan usage**: tackle types `/usage` into hr every 10 minutes while hr is idle (a local
+  command, no tokens), parses the limits and resets, stores them in `usage.jsonl` with
+  per-session token totals, and plots them with a projection.
 - **Persistence**: `%LOCALAPPDATA%	ackleleet.json` holds settings, delegates, writer
   tokens and every session's record (tackle id, stable across clears; name, role,
   project, manager, Claude session id, read commit). After a restart of tackle they are
@@ -94,6 +102,13 @@ turns" is not "between tasks".
   its environment) is listed by `ListAgents` as interactive and Remote Control, receives
   `SendMessage`, and replies by name. Its `SessionStart` hook reaches tackle.
 
+- Background jobs: Claude's `run_in_background` shell detaches, so the job's processes
+  are orphans, not descendants of `claude.exe`. tackle finds them by diffing the process
+  list between the call's `PreToolUse` and `PostToolUse`; the build lock and the "turn
+  ended, background work running" state follow those pids (tested with `sleep`).
+- The writer token refuses `Write` without the token and allows it after a grant; the
+  build lock refuses a second lock-word command; resume by Claude session id works
+  after a tackle restart (all tested on a scratch repo with a Haiku worker).
 - Auto-compaction: this machine's user settings, `~/.claude/settings.json`, have
   `"autoCompactEnabled": false`. The Claude Code binary also honours `DISABLE_AUTO_COMPACT` and
   `DISABLE_COMPACT` (the latter also refuses `/compact`), and a `PreCompact` hook exiting
@@ -104,7 +119,5 @@ turns" is not "between tasks".
 - Do typed `/context` and `/clear` behave in a ConPTY session the same as over stream-json?
 - How well does prompt caching hold across sessions reloading the same 700k corpus?
   tackle logs every wake after an idle gap with its cache read/write split, to measure it.
-- How do sessions wait on long builds? tackle infers background work from
-  `run_in_background` calls and the processes still running under a session.
 - Can tackle tell when a session holds an incoming cross-session message for approval?
   It shows notifications and permission prompts; a held message may not raise either.
