@@ -115,6 +115,13 @@ turns" is not "between tasks".
   arrives in the first message, after the cached prefix, and was written to cache anew by
   every session even when identical. So each fresh session or `/clear` pays the full cache
   write for a CLAUDE.md-imported corpus; staggering clears saves nothing.
+- The system prompt route does share (tested 2026-09-30, headless `claude -p` on Haiku,
+  a synthetic ~25k-token corpus, each run with a different prompt): with the corpus in
+  `--append-system-prompt-file`, a separate run read 49,108 tokens from cache and wrote
+  5,057 ($0.016); with the same corpus `@`-imported from CLAUDE.md, it read 21,846 and
+  wrote 32,533 ($0.068). At 700k on Opus 5.5 that is about $0.14 against $5.60 per fresh
+  session. Catch: the appended text is fixed at session start, so `/clear` keeps the old
+  corpus; a corpus change must restart the session fresh, never `/clear` it.
 - Costs: transcripts record each message's model and splits cache writes into 1-hour
   (2x input) and 5-minute (1.25x) parts; `src/pricing.rs` prices them at API list rates.
   A session's share of the weekly limit is estimated by splitting each rise in "Current
@@ -127,10 +134,7 @@ turns" is not "between tasks".
 ## Open questions
 
 - Do typed `/context` and `/clear` behave in a ConPTY session the same as over stream-json?
-- Could the corpus be shared through `--append-system-prompt-file` instead? The appended
-  text becomes part of the system prompt, which sessions do share, and Claude Code records
-  it at session start and re-sends it unchanged (so `/clear` would not re-read it; a
-  corpus change would mean a fresh session). Untested; one cheap test with two small
-  sessions would settle it. Don't run it without the user's go-ahead.
+- Does `--append-system-prompt-file` share the corpus in interactive sessions inside a
+  git repo too? Tested only headless (`claude -p`) in a directory without git (below).
 - Can tackle tell when a session holds an incoming cross-session message for approval?
   It shows notifications and permission prompts; a held message may not raise either.
