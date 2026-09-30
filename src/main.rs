@@ -112,8 +112,9 @@ fn usage_panel(ui: &mut egui::Ui, f: &mut Fleet) {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(&l.title).strong());
             ui.label(format!("{:.0}% used, resets {}", l.percent, l.resets));
-            if let Some(p) = proj {
-                ui.label(RichText::new(format!("100% at {} at the last hour's rate", p.format("%a %H:%M"))).color(if late { red } else { blue }));
+            let outlook = usage::outlook(&f.usage, l);
+            if !outlook.is_empty() {
+                ui.label(RichText::new(outlook.trim_start_matches("; ")).color(if late { red } else { blue }));
             }
         });
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 70.0), egui::Sense::hover());

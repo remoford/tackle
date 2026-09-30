@@ -194,6 +194,17 @@ pub fn used_between(a: &Reading, b: &Reading) -> BTreeMap<String, u64> {
         .collect()
 }
 
+/// Where the last hour's rate takes a limit, in words: runs out before its reset (and
+/// when), or doesn't. Empty when it isn't rising.
+pub fn outlook(readings: &[Reading], l: &Limit) -> String {
+    match (projection(readings, &l.title), l.resets_at) {
+        (Some(p), Some(r)) if p >= r => "; at the last hour's rate it won't run out before it resets".into(),
+        (Some(p), Some(_)) => format!("; at the last hour's rate it runs out at {}, BEFORE it resets", p.format("%a %H:%M")),
+        (Some(p), None) => format!("; at the last hour's rate 100% at {}", p.format("%a %H:%M")),
+        (None, _) => String::new(),
+    }
+}
+
 /// A few lines for hr: each limit, its reset, and when it runs out at the recent rate;
 /// then who used what since the first reading in the current session window.
 pub fn report(readings: &[Reading], plan_usd_month: f64) -> String {
@@ -201,10 +212,7 @@ pub fn report(readings: &[Reading], plan_usd_month: f64) -> String {
     let mut out = vec![format!("plan usage at {}:", last.at.format("%H:%M"))];
     for l in &last.limits {
         let mut line = format!("- {}: {:.0}% used, resets {}", l.title, l.percent, l.resets);
-        if let Some(p) = projection(readings, &l.title) {
-            let before_reset = l.resets_at.map(|r| p < r).unwrap_or(false);
-            line += &format!("; at the last hour's rate 100% at {}{}", p.format("%a %H:%M"), if before_reset { " (BEFORE the reset)" } else { "" });
-        }
+        line += &outlook(readings, l);
         out.push(line);
     }
     let per_pct = plan_usd_per_week_pct(plan_usd_month);
