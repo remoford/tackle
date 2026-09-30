@@ -79,6 +79,10 @@ cargo build --release
 target\release\tackle.exe
 ```
 
+`cargo test` runs the unit tests (parsers and bookkeeping: `/usage`, reset times, plan
+shares, the assignments file, the reading-rule tracer, read ranges, pricing, the rules
+lookup, `tk`'s arguments).
+
 tackle keeps its state in `%LOCALAPPDATA%\tackle`: `fleet.json` (sessions, settings,
 delegates, locks), `projects.json`, `actions.log` (every act and refusal, with who asked),
 `usage.jsonl`, and tk-hr's working directory.
