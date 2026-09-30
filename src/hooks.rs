@@ -12,13 +12,14 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
-const EVENTS: [&str; 12] = [
+const EVENTS: [&str; 13] = [
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
     "PermissionRequest",
+    "PermissionDenied",
     "Notification",
     "Stop",
     "StopFailure",

@@ -275,6 +275,11 @@ pub fn tool_line(v: &Value) -> String {
         .find_map(|k| input[*k].as_str())
         .or_else(|| input.as_object().and_then(|o| o.values().find_map(|x| x.as_str())))
         .unwrap_or_default();
+    // A file inside the session's directory is shown relative to it.
+    let arg = match v["cwd"].as_str() {
+        Some(cwd) if input["file_path"].is_string() => short_path(&arg.to_lowercase().replace('/', "\\"), Path::new(cwd)),
+        _ => arg.to_string(),
+    };
     clip(&format!("{}: {}", name, arg), 120)
 }
 
@@ -366,6 +371,10 @@ pub struct Session {
     pub alerted: String,
     /// A message from another session is waiting on this session's approval.
     pub held: bool,
+    /// A /clear has been typed and its SessionStart hasn't arrived yet.
+    pub clearing: bool,
+    /// The state-file line whose handover has already been acted on (one clear per line).
+    pub cleared_for: String,
     pub doing: Doing,
     pub size: (u16, u16),
 }
@@ -505,6 +514,8 @@ impl Session {
             stop_requested: false,
             alerted: String::new(),
             held: false,
+            clearing: false,
+            cleared_for: String::new(),
             doing: Doing::default(),
             size,
         })
@@ -554,6 +565,7 @@ impl Session {
         if cmd == "/clear" {
             // SessionStart (source "clear") brings it back to idle.
             self.activity = Activity::Starting;
+            self.clearing = true;
         }
     }
 
@@ -687,6 +699,7 @@ impl Session {
         match v["hook_event_name"].as_str().unwrap_or_default() {
             "SessionStart" => {
                 let source = v["source"].as_str().unwrap_or_default();
+                self.clearing = false;
                 if let Some(id) = v["session_id"].as_str() {
                     self.rec.claude_id = id.to_string();
                 }
@@ -778,6 +791,12 @@ impl Session {
                     d.last_turn_secs = t.elapsed().as_secs();
                 }
             }
+            "PermissionDenied" => {
+                d.tool = None;
+                d.notice.clear();
+                self.activity = Activity::Busy;
+                d.recent.push_back(format!("DENIED {}", tool_line(v)));
+            }
             "PreCompact" => self.compaction_blocked = true,
             "PostCompact" => self.contaminated = true,
             _ => {}
@@ -866,7 +885,7 @@ impl Session {
             return Some(("exited".into(), format!("{} exited without being asked to", self.rec.name)));
         }
         if self.activity == Activity::Waiting && !self.doing.notice.is_empty() {
-            return Some((format!("wait:{}", self.doing.notice), format!("{} needs input: {}", self.rec.name, self.doing.notice)));
+            return Some(("wait".into(), format!("{} needs input: {}", self.rec.name, self.doing.notice)));
         }
         None
     }

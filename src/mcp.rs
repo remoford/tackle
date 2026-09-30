@@ -377,7 +377,13 @@ fn call(tool: &str, args: &Value, f: &mut Fleet) -> Result<String, String> {
             f.s.presets.push(preset);
             done(f, format!("preset {} saved", label))
         }
-        "protocol" => Ok(crate::protocol::lookup(&arg("topic"))),
+        // Small relay models condense; the reminder travels with the text itself.
+        "protocol" => Ok(format!(
+            "(tk-hr: send everything below the line to the asker exactly as it is, in full, inside a code block. Do not summarise, shorten or leave out the format.)
+---
+{}",
+            crate::protocol::lookup(&arg("topic"))
+        )),
         "read_usage_now" => {
             f.usage_now();
             Ok("a /usage reading will be taken when tk-hr is next idle; check `usage` in a few seconds".into())

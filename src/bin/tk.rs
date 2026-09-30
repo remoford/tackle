@@ -124,6 +124,7 @@ fn parse_args(tool: &Value, argv: &[String]) -> Result<Value, String> {
         i += 1;
     }
     // Positional arguments fill the required ones in order; an array takes all that remain.
+    // With nothing required left, one positional value may fill `name`, `topic` or `rule`.
     let mut rest = positional.into_iter();
     let unset: Vec<&String> = required.iter().filter(|k| !out.contains_key(*k)).collect();
     for key in unset {
@@ -136,7 +137,12 @@ fn parse_args(tool: &Value, argv: &[String]) -> Result<Value, String> {
             out.insert(key.clone(), convert(key, &v)?);
         }
     }
-    let extra: Vec<String> = rest.collect();
+    let mut extra: Vec<String> = rest.collect();
+    if extra.len() == 1 {
+        if let Some(key) = ["name", "topic", "rule"].iter().find(|k| props.contains_key(**k) && !out.contains_key(**k)) {
+            out.insert(key.to_string(), Value::String(extra.remove(0)));
+        }
+    }
     if !extra.is_empty() {
         return Err(format!("unexpected argument(s): {}", extra.join(" ")));
     }
@@ -146,8 +152,22 @@ fn parse_args(tool: &Value, argv: &[String]) -> Result<Value, String> {
     Ok(Value::Object(out))
 }
 
+/// Git Bash (MSYS), the shell Claude's Bash tool uses on Windows, rewrites an argument
+/// like "/clear" into "C:/Program Files/Git/clear" before tk sees it. Undo that.
+fn unmangle(arg: String) -> String {
+    if std::env::var_os("MSYSTEM").is_none() {
+        return arg;
+    }
+    let root = std::env::var("EXEPATH").map(|p| p.replace('\\', "/")).unwrap_or_else(|_| "C:/Program Files/Git".into());
+    let root = root.trim_end_matches("/bin").trim_end_matches('/').to_string();
+    match arg.strip_prefix(&format!("{}/", root)) {
+        Some(rest) => format!("/{}", rest),
+        None => arg,
+    }
+}
+
 fn run() -> Result<bool, String> {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let argv: Vec<String> = std::env::args().skip(1).map(unmangle).collect();
     let port = port()?;
     let tools = request(port, &json!({ "cli_tools": true }))?["tools"].as_array().cloned().unwrap_or_default();
     let first = argv.first().map(String::as_str).unwrap_or("help");

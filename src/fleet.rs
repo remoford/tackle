@@ -520,8 +520,14 @@ impl Fleet {
                 self.record_job(name, &id, body, &before);
             }
         }
-        if event == "PostToolUseFailure" {
+        if event == "PostToolUseFailure" || event == "PermissionDenied" {
             self.launch_before.remove(&id);
+        }
+        if event == "PermissionDenied" {
+            if self.lock.as_ref().map(|l| l.session == name && l.tool_use_id == id).unwrap_or(false) {
+                self.lock = None;
+                self.add_log(format!("{}: released the build lock (permission denied)", name));
+            }
         }
         if matches!(event.as_str(), "PostToolUse" | "PostToolUseFailure") {
             self.after_tool(name, body);
@@ -604,7 +610,17 @@ impl Fleet {
     /// PreToolUse are its job. They are orphans, so this is the only way to find them.
     fn record_job(&mut self, name: &str, id: &str, body: &Value, before: &[u32]) {
         let skip = ["tackle.exe", "conhost.exe", "openconsole.exe", "claude.exe", "git.exe", "tk.exe"];
-        let new: Vec<(u32, String)> = crate::procs::snapshot().into_iter().filter(|p| !before.contains(&p.pid) && !skip.contains(&p.name.as_str())).map(|p| (p.pid, p.name)).collect();
+        // Only processes that belong to this session: under its claude.exe, or orphans
+        // (Claude's background shell exits and leaves the job without a parent). Other
+        // processes started meanwhile, e.g. while the call waited for permission, don't.
+        let session_pid = self.find_ref(name).and_then(|s| s.pid);
+        let all = crate::procs::snapshot();
+        let alive: std::collections::HashSet<u32> = all.iter().map(|p| p.pid).collect();
+        let owned = |p: &crate::procs::Proc| {
+            let chain = crate::procs::ancestors(&all, p.pid);
+            session_pid.map(|sp| chain.contains(&sp)).unwrap_or(false) || !alive.contains(&p.parent)
+        };
+        let new: Vec<(u32, String)> = all.iter().filter(|p| !before.contains(&p.pid) && !skip.contains(&p.name.as_str()) && owned(p)).map(|p| (p.pid, p.name.clone())).collect();
         if new.is_empty() {
             return;
         }
@@ -718,10 +734,11 @@ impl Fleet {
             // Rule 1: clear only at a handover. hr carries no state and clears on size alone.
             let clear = match s.rec.role {
                 Role::Hr => self.s.hr_clear_at > 0 && s.usage.context >= self.s.hr_clear_at,
-                _ => self.s.others_clear_at > 0 && s.doing.between_units.is_some() && s.usage.context >= self.s.others_clear_at,
+                _ => self.s.others_clear_at > 0 && s.doing.between_units.is_some() && s.doing.state_line != s.cleared_for && s.usage.context >= self.s.others_clear_at,
             };
-            if clear && s.activity != Activity::Exited && !s.pending.iter().any(|c| c == "/clear") {
+            if clear && s.activity != Activity::Exited && !s.clearing && !s.pending.iter().any(|c| c == "/clear") {
                 s.pending.push("/clear".into());
+                s.cleared_for = s.doing.state_line.clone();
                 if s.rec.role != Role::Hr {
                     logs.push(format!("{}: between units with {}k context; clear queued", s.rec.name, s.usage.context / 1000));
                 }

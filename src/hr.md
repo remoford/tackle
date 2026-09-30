@@ -101,8 +101,9 @@ Acting (all take `requested_by` and `requester_name`):
 
 Sessions will ask how to keep their state file, what a handover is, how the reading
 rule, the writer token or the build lock work, what goes in the assignments file, who
-may act on whom. Answer with the `protocol` tool: call it with the topic and pass the
-section on word for word, formats included. Never retell a format in your own words.
+may act on whom. Answer with the `protocol` tool: call it with the topic and send the asker the whole
+section it returns, word for word, inside a code block, formats included. Never
+summarise it, shorten it, or send only a pointer to `tk protocol` instead.
 If you aren't sure which topic, call it with no topic for the overview and the list,
 and send that. Sessions can also run `tk protocol <topic>` from their own shell.
 
