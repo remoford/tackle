@@ -105,8 +105,9 @@ rights; from anywhere else, yours.
 
 ## Documentation
 
-- [`docs/orchestration.md`](docs/orchestration.md): the state-file format, handovers,
-  clearing, the writer token and build lock, and who may act on a session.
+- [`docs/orchestration.md`](docs/orchestration.md): the working rules for sessions under
+  tackle (state file, handovers, reading rule, locks, authority). Agents don't need to
+  find it: tk-hr's `protocol` tool and `tk protocol` hand out its sections word for word.
 - [`CLAUDE.md`](CLAUDE.md): design notes, the rules tackle enforces, and what has and
   hasn't been verified.
 

@@ -1,4 +1,7 @@
-# Orchestration files
+# Working under tackle
+
+This is the source of what tk-hr tells agents: `protocol` (hr's tool) and `tk protocol`
+hand out these sections word for word. Edit it here; tackle compiles it in.
 
 How a session run by tackle records who it is and where it has got to, so that a
 replacement can pick up after a clear, a restart or a contamination, and so that tackle
@@ -13,6 +16,10 @@ The split, agreed with the sessions that ran the old workflow:
 - **`orchestration/` says who is doing it.** Live assignments, handovers and progress live
   in the project's gitignored `orchestration/` directory. tackle reads and writes only
   this, never the book.
+
+To ask tackle anything (who is running, what a session is doing, its screen, plan usage,
+these rules), message **tk-hr** in plain language, or run `tk` from your shell (`tk help`
+lists the commands; from inside a tackle session it acts with your own rights).
 
 ## The state file
 
@@ -75,33 +82,38 @@ part2-step4 | tk-ic-2 | review | 2026-09-30 15:10 |
 One line per unit; lines starting with `#` are comments. Unit names come from the book.
 States are free text; tackle uses `working`, `review`, `blocked` and `done`.
 
-## Clearing and restarting
+## Reading and staleness
 
-- A session is cleared (`/clear`, which re-reads the corpus from disk) only when its
-  manager or the human asks, or automatically when its state file ends in `BETWEEN UNITS`
-  and its context has passed the "clear at handover" size set in tackle.
-- A clear costs a full read (about 680k–800k tokens and 8–9 minutes on the ic corpus), so
-  reuse a session while it has room.
+- **The corpus is read with the Read tool**, as much of it as the task needs; the Read
+  call in the transcript is the evidence that a read happened. tackle records every Read
+  call: the file, the line range, and the file's modification time then.
+- **The reading rule, checked**: a project can have a reading rule in tackle, e.g.
+  `book/main.tex until book/bsplines_arbitrary.tex`. tackle follows `\input`, `\include`
+  and `\subfile` from the start files, depth first, up to the `until` file, to get the
+  files a full read requires, and shows for each session which of them it never opened
+  and which it read only partly (an offset/limit read that never reached the last line).
+  A new `\input` in the book shows up as a file nobody has opened.
+- **Staleness**: once a file's modification time is newer than when a session read it,
+  that file is stale for the session (its own edits don't count). tackle shows how many
+  read files changed and which. It does not clear anyone on corpus changes: the manager
+  batches them and decides.
 - **Refreshing**: a manager (or the human) can ask tk-hr or `tk refresh-stale` to refresh
   a stale session. There is no clear, which would throw away the rest of its read: at
   its next idle moment tackle tells it which files changed and to re-read each of them
   with the Read tool, to its last line.
-- **The reading rule, checked**: a project can have a reading rule in tackle, e.g.
-  `book/main.tex until book/bsplines_arbitrary.tex`. tackle follows `\input`, `\include`
-  and `\subfile` from the start files, depth first, up to the `until` file, to get the
-  files a full read requires, and compares that with each session's Read calls line
-  range by line range: files never opened, and files read only partly (an offset/limit
-  read that never reached the last line). A new `\input` in the book shows up as a file
-  nobody has opened.
+
+## Clearing and restarting
+
+- **A `/clear` drops everything the session has read** and all its working context.
+  Afterwards it reads again what its next task needs, so a clear followed by a full read
+  costs about 680k–800k tokens and 8–9 minutes on the ic corpus. Reuse a session across
+  units while it has room.
+- A session is cleared only when its manager or the human asks, or automatically when its
+  state file ends in `BETWEEN UNITS` and its context has passed the "clear at handover"
+  size set in tackle. Queued clears are typed only between turns, never mid-turn.
 - **Rulings not yet in CLAUDE.md**: tackle counts the `- ` lines in that section of each
-  state file and shows the count, since rulings that arrive by message can't otherwise
-  be tracked.
-- **Staleness**: tackle records every file a session reads with the Read tool, with the
-  file's modification time. Once a file's modification time is newer, it is stale for
-  that session (its own edits don't count). tackle shows how many read files changed and
-  which. It does not clear on corpus changes: the manager batches them and decides.
-- A `/clear` drops everything the session has read; it then reads what its next task
-  needs. The state file should say what that is.
+  state file and shows the count, since rulings that arrive by message are lost with a
+  clear unless they are written there.
 - **Compaction is never allowed.** Sessions run with auto-compaction and `/compact`
   disabled, and a hook refuses compaction. A session that compacts anyway is stopped and
   may only come back as a fresh session told to resume from its state file, never resumed
@@ -135,5 +147,6 @@ holds, at the cost of that safeguard; that is the human's decision.
 
 Only the human, delegates the human names in tackle, the session itself, and the sessions
 above it in the chain that started it may type into a session, press its keys, clear, stop
-or restart it (through tk-hr). Every such act is logged with who asked, in tackle's
-`actions.log`.
+or restart it (through tk-hr or `tk`). A session that starts another becomes its manager.
+Looking (who is running, what a session is doing, its screen, usage, these rules) is open
+to everyone. Every act, and every refusal, is logged with who asked.

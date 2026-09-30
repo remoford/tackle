@@ -116,6 +116,13 @@ pub fn tools() -> Vec<Value> {
             false,
         ),
         tool("units", "Who holds which unit of work in a project, from its orchestration/assignments.md.", project.clone(), &["project"], false),
+        tool(
+            "protocol",
+            "The working rules for sessions under tackle, word for word: the state file and its format, handovers and clearing, the reading rule, the writer token and build lock, unit assignments, held messages, who may act on a session. No topic: an overview and the list of topics.",
+            json!({ "topic": { "type": "string", "description": "e.g. state file, handover, reading rule, writer token, build lock, assignments, authority" } }),
+            &[],
+            false,
+        ),
         tool("list_presets", "Saved ways to start a session (project, model, role, brief), by name.", json!({}), &[], false),
         tool(
             "read_check",
@@ -370,6 +377,7 @@ fn call(tool: &str, args: &Value, f: &mut Fleet) -> Result<String, String> {
             f.s.presets.push(preset);
             done(f, format!("preset {} saved", label))
         }
+        "protocol" => Ok(crate::protocol::lookup(&arg("topic"))),
         "read_usage_now" => {
             f.usage_now();
             Ok("a /usage reading will be taken when tk-hr is next idle; check `usage` in a few seconds".into())

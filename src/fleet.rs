@@ -367,12 +367,11 @@ impl Fleet {
     fn brief_for(&self, rec: &Record, brief: &str) -> String {
         let manager = rec.manager.clone().unwrap_or_else(|| "the human".into());
         format!(
-            "[tackle] You are {} ({}; your manager is {}). Keep your state file at {} as described in {}.\n\n{}",
+            "[tackle] You are {} ({}; your manager is {}). Keep your state file at {}. For its format and the other working rules (handovers, the reading rule, the writer token and build lock), ask tk-hr, or run `tk protocol` from your shell (`tk protocol state` for the state file).\n\n{}",
             rec.name,
             rec.role.label(),
             manager,
             rec.state_file().display(),
-            orchestration_doc().display(),
             brief
         )
     }
@@ -887,10 +886,3 @@ fn rc_url(parser: &vt100::Parser) -> String {
         .unwrap_or_default()
 }
 
-/// Where the orchestration file formats are written down.
-pub fn orchestration_doc() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|e| e.ancestors().find(|p| p.join("docs").join("orchestration.md").is_file()).map(|p| p.join("docs").join("orchestration.md")))
-        .unwrap_or_else(|| PathBuf::from("docs/orchestration.md"))
-}

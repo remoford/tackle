@@ -10,6 +10,7 @@ mod pricing;
 mod procs;
 mod reach;
 mod projects;
+mod protocol;
 mod session;
 mod term;
 mod units;

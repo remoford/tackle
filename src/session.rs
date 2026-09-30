@@ -452,6 +452,15 @@ impl Session {
         cmd.env("TACKLE_ID", &rec.tid);
         cmd.env("TACKLE_STATE_FILE", rec.state_file());
         cmd.env("TACKLE_PORT", l.port.to_string());
+        // Put tk on its PATH, so it can ask tackle directly (with its own rights).
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let mut dirs = vec![dir];
+            dirs.extend(std::env::split_paths(&path));
+            if let Ok(joined) = std::env::join_paths(dirs) {
+                cmd.env("PATH", joined);
+            }
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         let child = pair.slave.spawn_command(cmd).map_err(|e| format!("spawn {}: {}", l.claude.display(), e))?;

@@ -46,7 +46,7 @@ pub fn save(project: &Path, units: &[Unit]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let mut text = String::from("# Unit assignments, kept by tackle (see tackle's docs/orchestration.md).\n# unit | holder | state | since | note\n");
+    let mut text = String::from("# Unit assignments, kept by tackle (ask tk-hr, or run `tk protocol assignments`).\n# unit | holder | state | since | note\n");
     for u in units {
         text += &format!("{} | {} | {} | {} | {}\n", u.unit, u.holder, u.state, u.since, u.note.replace('\n', " "));
     }
