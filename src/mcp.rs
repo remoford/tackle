@@ -117,6 +117,14 @@ pub fn tools() -> Vec<Value> {
         ),
         tool("units", "Who holds which unit of work in a project, from its orchestration/assignments.md.", project.clone(), &["project"], false),
         tool("list_presets", "Saved ways to start a session (project, model, role, brief), by name.", json!({}), &[], false),
+        tool(
+            "read_check",
+            "One session's reading against its project's reading rule: which required files it never opened, and which it read only partly (offset/limit reads that never reached the last line).",
+            name.clone(),
+            &["name"],
+            false,
+        ),
+        tool("read_usage_now", "Take a /usage reading as soon as tk-hr is idle (usually within seconds), e.g. right before and after a full read. Check `usage` afterwards.", json!({}), &[], false),
         tool("log", "tackle's most recent actions, refusals and wake measurements.", json!({ "n": { "type": "integer", "description": "how many lines (default 20)" } }), &[], false),
         tool("clear", "Queue /clear for a session, typed the next time it is idle between turns.", name.clone(), &["name"], true),
         tool("show_context", "Queue /context for a session, typed when it is next idle. Read the result with screen.", name.clone(), &["name"], true),
@@ -196,6 +204,13 @@ pub fn tools() -> Vec<Value> {
         ),
         tool("delete_preset", "Delete a preset. Human and delegates only.", json!({ "preset": { "type": "string" } }), &["preset"], true),
         tool(
+            "set_reading_rule",
+            "Set a project's reading rule: the files a full read starts from and optionally where it ends, e.g. \"book/main.tex until book/bsplines_arbitrary.tex\" (follows \\input, \\include and \\subfile). Empty clears it. Human and delegates only.",
+            json!({ "project": project["project"], "rule": { "type": "string" } }),
+            &["project"],
+            true,
+        ),
+        tool(
             "save_preset",
             "Save (or replace) a preset. Human and delegates only.",
             json!({
@@ -245,6 +260,12 @@ fn session_line(f: &Fleet, s: &crate::session::Session) -> String {
     }
     if s.doing.between_units.is_some() {
         line += ", between units";
+    }
+    if let Some((total, never, partly)) = &s.doing.reading {
+        line += &format!(", read {}/{}", total - never.len() - partly.len(), total);
+    }
+    if s.doing.rulings_pending > 0 {
+        line += &format!(", {} rulings not in CLAUDE.md", s.doing.rulings_pending);
     }
     if !s.pending.is_empty() {
         line += &format!(", queued {}", s.pending.join(" "));
@@ -348,6 +369,50 @@ fn call(tool: &str, args: &Value, f: &mut Fleet) -> Result<String, String> {
             let label = preset.name.clone();
             f.s.presets.push(preset);
             done(f, format!("preset {} saved", label))
+        }
+        "read_usage_now" => {
+            f.usage_now();
+            Ok("a /usage reading will be taken when tk-hr is next idle; check `usage` in a few seconds".into())
+        }
+        "read_check" => {
+            let s = f.find_ref(&name).ok_or_else(|| format!("no running session named {:?}", name))?;
+            match &s.doing.reading {
+                None => Ok(format!("{}: its project has no reading rule (set_reading_rule), or tackle hasn't checked yet", s.rec.name)),
+                Some((total, never, partly)) => {
+                    let list = |v: &Vec<String>| v.iter().take(40).map(|p| crate::session::short_path(p, &s.rec.cwd)).collect::<Vec<_>>().join(", ") + if v.len() > 40 { ", ..." } else { "" };
+                    let partly_detail: Vec<String> = partly
+                        .iter()
+                        .take(40)
+                        .map(|p| {
+                            let m = &s.rec.reads[p];
+                            let r: Vec<String> = m.ranges.iter().map(|(a, b)| format!("{}-{}", a, b)).collect();
+                            format!("{} (read lines {} of {})", crate::session::short_path(p, &s.rec.cwd), r.join(","), m.lines)
+                        })
+                        .collect();
+                    Ok(format!(
+                        "{}: {} of {} required files read to the last line.\nnever opened ({}): {}\nread partly ({}): {}",
+                        s.rec.name,
+                        total - never.len() - partly.len(),
+                        total,
+                        never.len(),
+                        list(never),
+                        partly.len(),
+                        partly_detail.join(", ")
+                    ))
+                }
+            }
+        }
+        "set_reading_rule" => {
+            fleet_wide(f, "set a reading rule")?;
+            let dir = crate::projects::resolve(&f.data, &arg("project"))?.path;
+            let rule = arg("rule");
+            if rule.is_empty() {
+                f.s.reading_rules.remove(&crate::fleet::key(&dir));
+                return done(f, format!("reading rule for {} cleared", dir.display()));
+            }
+            let n = crate::reach::required(&dir, &crate::reach::parse_rule(&rule)).len();
+            f.s.reading_rules.insert(crate::fleet::key(&dir), rule.clone());
+            done(f, format!("reading rule for {}: {} ({} files required)", dir.display(), rule, n))
         }
         "delete_preset" => {
             fleet_wide(f, "delete a preset")?;

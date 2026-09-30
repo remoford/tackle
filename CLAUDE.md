@@ -89,9 +89,14 @@ turns" is not "between tasks".
    and the `PreCompact` hook blocks compaction (exit 2). A session that compacts anyway is
    stopped and may only be started fresh from its state file, never resumed.
 4. **One writer, one build.** In a project marked "one writer", only the writer-token
-   holder may edit or `git commit`/`git push` (a `PreToolUse` hook refuses the rest). One
-   Bash command containing a build-lock word (`lake`, `xelatex`, `latexmk`) at a time
-   across the fleet; others are refused at once, never queued.
+   holder may edit or `git commit`/`git push` (a `PreToolUse` hook refuses the rest), and
+   only after it has pulled. One Bash command containing a build-lock word (`lake`,
+   `xelatex`, `latexmk`, `build_log.py`, `tools/build.py`) at a time across the fleet;
+   others are refused at once, never queued.
+5. **The reading rule, checked.** With a project's reading rule set in tackle, each
+   session shows how many required files it has read to the last line, which it never
+   opened, and which it read only partly. `refresh_stale` never clears: it tells the
+   session to re-read the changed files.
 
 ## What has been verified (2026-09-30)
 

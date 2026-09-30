@@ -90,12 +90,57 @@ impl Record {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ReadMark {
     pub mtime_ms: u64,
+    /// Lines in the file when last read.
+    #[serde(default)]
+    pub lines: u64,
+    /// Line ranges its Read calls covered (1-based, inclusive), merged.
+    #[serde(default)]
+    pub ranges: Vec<(u64, u64)>,
 }
 
 impl ReadMark {
     pub fn of(path: &Path) -> Option<ReadMark> {
-        Some(ReadMark { mtime_ms: mtime_ms(path)? })
+        Some(ReadMark { mtime_ms: mtime_ms(path)?, lines: 0, ranges: Vec::new() })
     }
+
+    /// Read to its last line, every line of it.
+    pub fn complete(&self) -> bool {
+        let mut next = 1;
+        for &(a, b) in &self.ranges {
+            if a > next {
+                return false;
+            }
+            next = next.max(b + 1);
+        }
+        next > self.lines
+    }
+
+    fn add(&mut self, a: u64, b: u64) {
+        self.ranges.push((a, b));
+        self.ranges.sort();
+        let mut merged: Vec<(u64, u64)> = Vec::new();
+        for (a, b) in self.ranges.drain(..) {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 + 1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        self.ranges = merged;
+    }
+}
+
+/// Records a Read call: its line range (Read's offset is the first line, 1-based; limit
+/// defaults to 2000 lines) on top of earlier reads of the same, unchanged file.
+fn record_read(prev: Option<&ReadMark>, path: &Path, offset: Option<u64>, limit: Option<u64>) -> Option<ReadMark> {
+    let mut m = ReadMark::of(path)?;
+    m.lines = std::fs::read(path).map(|b| (b.iter().filter(|&&c| c == b'\n').count() + usize::from(b.last().map(|&c| c != b'\n').unwrap_or(false))) as u64).unwrap_or(0);
+    if let Some(p) = prev.filter(|p| p.mtime_ms == m.mtime_ms) {
+        m.ranges = p.ranges.clone();
+    }
+    let start = offset.unwrap_or(1).max(1);
+    let end = (start + limit.unwrap_or(2000)).saturating_sub(1).min(m.lines.max(start));
+    m.add(start, end);
+    Some(m)
 }
 
 fn mtime_ms(path: &Path) -> Option<u64> {
@@ -281,6 +326,10 @@ pub struct Doing {
     pub state_changed: Option<Instant>,
     /// Set when the state file's last line is "BETWEEN UNITS <commit>".
     pub between_units: Option<String>,
+    /// Rulings listed in its state file as not yet in CLAUDE.md.
+    pub rulings_pending: usize,
+    /// Against the project's reading rule: (files required, never opened, read only partly).
+    pub reading: Option<(usize, Vec<String>, Vec<String>)>,
     /// Files it read that have changed since, other than by its own edits.
     pub stale: Vec<String>,
     /// A wake after a gap: (gap in seconds, context at the time), measured when the next
@@ -551,6 +600,19 @@ impl Session {
         if !d.state_line.is_empty() {
             out.push(format!("state file: {}", d.state_line));
         }
+        if d.rulings_pending > 0 {
+            out.push(format!("rulings not yet in CLAUDE.md: {}", d.rulings_pending));
+        }
+        if let Some((total, never, partly)) = &d.reading {
+            let mut line = format!("reading rule: {} of {} required files read to the last line", total - never.len() - partly.len(), total);
+            if !never.is_empty() {
+                line += &format!("; never opened: {}{}", never.iter().take(5).map(|p| short_path(p, &self.rec.cwd)).collect::<Vec<_>>().join(", "), if never.len() > 5 { ", ..." } else { "" });
+            }
+            if !partly.is_empty() {
+                line += &format!("; partly: {}", partly.iter().take(5).map(|p| short_path(p, &self.rec.cwd)).collect::<Vec<_>>().join(", "));
+            }
+            out.push(line);
+        }
         if !self.pending.is_empty() {
             out.push(format!("queued: {}", self.pending.join(" ")));
         }
@@ -668,11 +730,18 @@ impl Session {
                     let tool = v["tool_name"].as_str().unwrap_or_default();
                     let key = file.to_lowercase().replace('/', "\\");
                     let own_edit = matches!(tool, "Edit" | "Write" | "MultiEdit" | "NotebookEdit") && self.rec.reads.contains_key(&key);
-                    if !file.is_empty() && (tool == "Read" || own_edit) {
-                        if let Some(m) = ReadMark::of(Path::new(file)) {
+                    if !file.is_empty() && tool == "Read" {
+                        let (offset, limit) = (v["tool_input"]["offset"].as_u64(), v["tool_input"]["limit"].as_u64());
+                        if let Some(m) = record_read(self.rec.reads.get(&key), Path::new(file), offset, limit) {
                             self.rec.reads.insert(key.clone(), m);
                             d.stale.retain(|p| *p != key);
                         }
+                    } else if own_edit {
+                        // Its own edit: not stale, and what it read still counts as read.
+                        if let (Some(m), Some(now)) = (self.rec.reads.get_mut(&key), mtime_ms(Path::new(file))) {
+                            m.mtime_ms = now;
+                        }
+                        d.stale.retain(|p| *p != key);
                     }
                 }
                 self.activity = Activity::Busy;
@@ -743,6 +812,9 @@ impl Session {
         }
         // "15:05 BETWEEN UNITS <commit>" or "BETWEEN UNITS <commit>"
         self.doing.between_units = last.find("BETWEEN UNITS").map(|i| last[i + "BETWEEN UNITS".len()..].trim().to_string());
+        // The "- " lines under "rulings not yet in CLAUDE.md".
+        let mut lines = text.lines().skip_while(|l| !l.trim_start().to_lowercase().starts_with("rulings not yet in claude.md")).skip(1);
+        self.doing.rulings_pending = lines.by_ref().take_while(|l| l.trim_start().starts_with('-') || l.starts_with("  ")).filter(|l| l.trim_start().starts_with('-')).count();
     }
 
     /// Catches prompts that come before any hook fires, like Claude's folder-trust
@@ -788,6 +860,17 @@ impl Session {
             return Some((format!("wait:{}", self.doing.notice), format!("{} needs input: {}", self.rec.name, self.doing.notice)));
         }
         None
+    }
+
+    /// Checks what it has read against the files the project's reading rule requires.
+    pub fn check_reading(&mut self, required: &[String]) {
+        if required.is_empty() {
+            self.doing.reading = None;
+            return;
+        }
+        let never: Vec<String> = required.iter().filter(|p| !self.rec.reads.contains_key(*p)).cloned().collect();
+        let partly: Vec<String> = required.iter().filter(|p| self.rec.reads.get(*p).map(|m| !m.complete()).unwrap_or(false)).cloned().collect();
+        self.doing.reading = Some((required.len(), never, partly));
     }
 
     /// A file it read is stale once its modification time is newer than when it read it

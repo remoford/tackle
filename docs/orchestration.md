@@ -33,6 +33,11 @@ rulings not yet in CLAUDE.md (word for word, dated):
 open questions (to whom, when, answered?):
 - to author, 14:20: does step 3 need the full audit? (open)
 
+brief checklist (before starting the unit):
+- code the unit touches: read? (paths)
+- callers and uses searched? (how)
+- questions the brief leaves open: asked? (to whom)
+
 uncommitted files: src/Foo.lean
 last commit produced: <hash>
 reports: orchestration/reports/unit1.md (84 lines)
@@ -77,9 +82,20 @@ States are free text; tackle uses `working`, `review`, `blocked` and `done`.
   and its context has passed the "clear at handover" size set in tackle.
 - A clear costs a full read (about 680k–800k tokens and 8–9 minutes on the ic corpus), so
   reuse a session while it has room.
-- **Refreshing**: a manager (or the human) can ask tk-hr or `tk refresh-stale` to clear a
-  stale session at its next idle moment; tackle then tells it which files changed, so it
-  re-reads what its task needs.
+- **Refreshing**: a manager (or the human) can ask tk-hr or `tk refresh-stale` to refresh
+  a stale session. There is no clear, which would throw away the rest of its read: at
+  its next idle moment tackle tells it which files changed and to re-read each of them
+  with the Read tool, to its last line.
+- **The reading rule, checked**: a project can have a reading rule in tackle, e.g.
+  `book/main.tex until book/bsplines_arbitrary.tex`. tackle follows `\input`, `\include`
+  and `\subfile` from the start files, depth first, up to the `until` file, to get the
+  files a full read requires, and compares that with each session's Read calls line
+  range by line range: files never opened, and files read only partly (an offset/limit
+  read that never reached the last line). A new `\input` in the book shows up as a file
+  nobody has opened.
+- **Rulings not yet in CLAUDE.md**: tackle counts the `- ` lines in that section of each
+  state file and shows the count, since rulings that arrive by message can't otherwise
+  be tracked.
 - **Staleness**: tackle records every file a session reads with the Read tool, with the
   file's modification time. Once a file's modification time is newer, it is stale for
   that session (its own edits don't count). tackle shows how many read files changed and
@@ -101,8 +117,10 @@ The author forbids branches and worktrees, so sessions share one checkout.
   else. The manager grants the token; tackle refuses the holder's edits until it has run
   `git pull`; the holder releases the token after committing and pushing.
 - Only one heavy build runs at a time across the fleet: a Bash command containing a
-  build-lock word (by default `lake`, `xelatex`, `latexmk`) is refused while another holds
-  the lock, with a message saying who holds it. Wait and retry; nothing queues.
+  build-lock word is refused while another holds the lock, with a message saying who holds
+  it. Wait and retry; nothing queues. By default the words are `lake`, `xelatex`,
+  `latexmk`, `build_log.py` and `tools/build.py` (the ic build scripts). A plain word
+  matches a word of the command; one with a dot or slash matches anywhere in it.
 
 ## Held messages
 

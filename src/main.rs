@@ -8,6 +8,7 @@ mod mcp;
 mod notify;
 mod pricing;
 mod procs;
+mod reach;
 mod projects;
 mod session;
 mod term;
@@ -580,6 +581,14 @@ impl App {
                         }
                         if s.doing.between_units.is_some() {
                             ui.label(RichText::new("between units").weak());
+                        }
+                        if let Some((total, never, partly)) = &s.doing.reading {
+                            let full = total - never.len() - partly.len();
+                            let color = if full == *total { Color32::from_rgb(80, 200, 120) } else { Color32::from_rgb(230, 170, 60) };
+                            ui.label(RichText::new(format!("read {}/{}", full, total)).color(color)).on_hover_text(format!("{} never opened, {} read only partly (tk read-check {})", never.len(), partly.len(), s.rec.name));
+                        }
+                        if s.doing.rulings_pending > 0 {
+                            ui.label(RichText::new(format!("{} rulings pending", s.doing.rulings_pending)).color(Color32::from_rgb(230, 170, 60))).on_hover_text("rulings in its state file not yet in CLAUDE.md");
                         }
                     });
                     ui.horizontal_wrapped(|ui| {

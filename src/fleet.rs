@@ -87,6 +87,8 @@ pub struct Saved {
     pub alerts: bool,
     /// Sessions granted a writer token that must pull before they edit.
     pub pull_owed: Vec<String>,
+    /// Project directory -> its reading rule, e.g. "book/main.tex until book/x.tex".
+    pub reading_rules: BTreeMap<String, String>,
     pub presets: Vec<Preset>,
 }
 
@@ -117,7 +119,7 @@ impl Default for Saved {
             others_clear_at: 0,
             window: 1_000_000,
             cache_ttl_min: 60,
-            lock_words: vec!["lake".into(), "xelatex".into(), "latexmk".into()],
+            lock_words: ["lake", "xelatex", "latexmk", "build_log.py", "tools/build.py"].iter().map(|w| w.to_string()).collect(),
             one_writer: Vec::new(),
             writers: BTreeMap::new(),
             delegates: Vec::new(),
@@ -126,6 +128,7 @@ impl Default for Saved {
             plan_usd_month: 200.0,
             alerts: true,
             pull_owed: Vec::new(),
+            reading_rules: BTreeMap::new(),
             presets: Vec::new(),
         }
     }
@@ -565,7 +568,14 @@ impl Fleet {
         }
 
         // One heavy build at a time.
-        if tool == "Bash" && self.s.lock_words.iter().any(|w| has(&w.to_lowercase())) {
+        // A plain word matches a word of the command; anything with a dot or slash in it
+        // (a script such as tools/build.py) matches anywhere in the command.
+        let lower = command.to_lowercase().replace('\\', "/");
+        let takes_lock = |w: &String| {
+            let w = w.to_lowercase();
+            if w.contains('.') || w.contains('/') { lower.contains(&w) } else { has(&w) }
+        };
+        if tool == "Bash" && self.s.lock_words.iter().any(takes_lock) {
             if let Some(l) = &self.lock {
                 let msg = format!(
                     "tackle: build lock held by {} ({}, {}). Only one {} at a time; wait and try again.",
@@ -675,6 +685,7 @@ impl Fleet {
         }
         let alive: std::collections::HashSet<u32> = if slow { crate::procs::snapshot().iter().map(|p| p.pid).collect() } else { Default::default() };
         let mut logs = Vec::new();
+        let mut required_cache: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for s in &mut self.sessions {
             s.check_exit();
             if let Some(wake) = s.poll_transcript(now) {
@@ -690,6 +701,14 @@ impl Fleet {
             }
             if stale_check && s.activity != Activity::Exited {
                 s.check_stale();
+                let rule = self.s.reading_rules.get(&key(&s.rec.cwd)).cloned();
+                match rule {
+                    Some(spec) => {
+                        let required = required_cache.entry(key(&s.rec.cwd)).or_insert_with(|| crate::reach::required(&s.rec.cwd, &crate::reach::parse_rule(&spec))).clone();
+                        s.check_reading(&required);
+                    }
+                    None => s.check_reading(&[]),
+                }
             }
             // Rule 3: a compacted context is contaminated. Stop it; it may only come back fresh.
             if s.contaminated && !s.rec.compacted {
@@ -777,13 +796,14 @@ impl Fleet {
         if s.doing.stale.is_empty() {
             return Ok(format!("{}: none of its read files changed", s.rec.name));
         }
+        // No clear: that would throw away everything else it has read. It re-reads just the
+        // changed files, with Read calls, which also keeps the evidence of the read.
         let files: Vec<String> = s.doing.stale.iter().map(|p| session::short_path(p, &s.rec.cwd)).collect();
-        s.pending.push("/clear".into());
         s.pending.push(format!(
-            "[tackle] You were cleared because files you had read changed: {}. Re-read what your current task needs (see your state file), then carry on.",
+            "[tackle] These files you read have changed since you read them: {}. Before relying on them again, re-read each one now with the Read tool, to its last line; what you read before of them is out of date.",
             files.join(", ")
         ));
-        Ok(format!("{}: clear queued; {} changed files", s.rec.name, files.len()))
+        Ok(format!("{}: told to re-read {} changed files when next idle", s.rec.name, files.len()))
     }
 
     /// Takes a /usage reading on hr when it is idle and one is due: types /usage, reads
