@@ -58,7 +58,12 @@ sessions need in context word for word. That brings rules a normal harness doesn
   outside tackle shows as "outside tackle".
 - Remembers sessions, settings, delegates and locks across restarts, and can resume a
   session by id or start it fresh from its state file.
-- Minimises to the system tray; closing the window keeps the sessions running.
+- Alerts you with a Windows notification when a session needs input, is holding a
+  message from another session for approval, compacts, or exits on its own.
+- Logs the messages its sessions send each other, keeps a per-project file of who holds
+  which unit of work, and saves presets for starting sessions.
+- Minimises to the system tray, optionally starts with Windows, and closing the window
+  keeps the sessions running.
 
 ## Requirements
 

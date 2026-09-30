@@ -80,7 +80,16 @@ Acting (all take `requested_by` and `requester_name`):
   compaction), `fresh_session(name, brief)` (a new session told to pick up from its state
   file).
 - `grant_writer(project, name)` and `release_writer(project)`: the writer token, for
-  projects where only one session may edit and commit.
+  projects where only one session may edit and commit. The holder must `git pull`
+  before tackle lets it edit.
+- `refresh_stale(name)`: for a session whose read files changed, queue a clear and then
+  tell it which files changed. Without a name: every stale session the asker may act on.
+- `units(project)`, `assign_unit(project, unit, name, state, note)`, `remove_unit`: who
+  holds which unit of work, kept in the project's `orchestration/assignments.md`.
+- `list_presets`, `start_preset(preset, name, brief)`: start a session a saved way;
+  `save_preset` and `delete_preset` for the human and delegates.
+- `forget_session(name)`: drop a stopped session from tackle's list.
+- `traffic(n, name)`: the messages tackle's sessions have sent each other.
 - `release_lock`: free a stuck build lock.
 - `add_project`, `remove_project`, `set_settings`: human and delegates only.
 

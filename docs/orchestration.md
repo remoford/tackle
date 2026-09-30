@@ -55,6 +55,21 @@ Rules:
 - **Rulings, open questions, uncommitted files and reports** are what a replacement needs
   and can't get from the book. Keep them current.
 
+## The assignments file
+
+One per project: `orchestration/assignments.md`, saying who holds which unit right now.
+tackle keeps it (through tk-hr's or `tk`'s `assign_unit` and `remove_unit`), but it is
+plain text that a session without tackle can read and keep by hand:
+
+```
+# unit | holder | state | since | note
+part2-step3 | tk-ic-1 | working | 2026-09-30 14:02 | waiting on the axiom audit
+part2-step4 | tk-ic-2 | review | 2026-09-30 15:10 |
+```
+
+One line per unit; lines starting with `#` are comments. Unit names come from the book.
+States are free text; tackle uses `working`, `review`, `blocked` and `done`.
+
 ## Clearing and restarting
 
 - A session is cleared (`/clear`, which re-reads the corpus from disk) only when its
@@ -62,6 +77,9 @@ Rules:
   and its context has passed the "clear at handover" size set in tackle.
 - A clear costs a full read (about 680k–800k tokens and 8–9 minutes on the ic corpus), so
   reuse a session while it has room.
+- **Refreshing**: a manager (or the human) can ask tk-hr or `tk refresh-stale` to clear a
+  stale session at its next idle moment; tackle then tells it which files changed, so it
+  re-reads what its task needs.
 - **Staleness**: tackle records every file a session reads with the Read tool, with the
   file's modification time. Once a file's modification time is newer, it is stale for
   that session (its own edits don't count). tackle shows how many read files changed and
@@ -80,11 +98,20 @@ The author forbids branches and worktrees, so sessions share one checkout.
 
 - In a project marked "one writer" in tackle, only the session holding the writer token
   may edit files or run `git commit` / `git push`; tackle refuses those calls from anyone
-  else. The manager grants the token; the holder pulls before editing, and releases the
-  token after committing and pushing.
+  else. The manager grants the token; tackle refuses the holder's edits until it has run
+  `git pull`; the holder releases the token after committing and pushing.
 - Only one heavy build runs at a time across the fleet: a Bash command containing a
   build-lock word (by default `lake`, `xelatex`, `latexmk`) is refused while another holds
   the lock, with a message saying who holds it. Wait and retry; nothing queues.
+
+## Held messages
+
+Claude holds an incoming message from another session for approval when the sender runs
+in a different permission mode, and the receiving session stalls until someone approves
+or declines it at its terminal (in tackle, or over Remote Control). tackle spots the
+prompt on the screen, marks the session "needs input: held message" and alerts the
+human. Setting `crossSessionInbound` to `accept` in Claude's settings would stop the
+holds, at the cost of that safeguard; that is the human's decision.
 
 ## Authority
 

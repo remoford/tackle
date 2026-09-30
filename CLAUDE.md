@@ -146,5 +146,9 @@ turns" is not "between tasks".
 - What does a full read, or a clear followed by re-reading, cost as a share of the Max
   plan's weekly limit? tackle now records /usage beside per-session spend; the first real
   run will show it.
-- Can tackle tell when a session holds an incoming cross-session message for approval?
-  It shows notifications and permission prompts; a held message may not raise either.
+- Held messages: Claude shows "A message from another session needs your approval" /
+  "Held message from another session" on the receiving session's screen; tackle watches
+  for that text (untested against a real hold). `crossSessionInbound: "accept"` would
+  stop the holds; left to the user.
+- Stable ids for delegates: the messaging harness gives only an address that changes
+  when that session restarts, so a delegate must be trusted again after its restart.

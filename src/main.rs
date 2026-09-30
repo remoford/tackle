@@ -5,11 +5,13 @@ mod fleet;
 mod hooks;
 mod icon;
 mod mcp;
+mod notify;
 mod pricing;
 mod procs;
 mod projects;
 mod session;
 mod term;
+mod units;
 mod usage;
 
 use eframe::egui::{self, Color32, RichText};
@@ -179,6 +181,56 @@ fn usage_panel(ui: &mut egui::Ui, f: &mut Fleet) {
     }
 }
 
+/// Messages tackle's sessions have sent each other: how many between each pair, then the
+/// most recent, newest last.
+fn traffic_panel(ui: &mut egui::Ui, f: &Fleet) {
+    if f.traffic.is_empty() {
+        ui.label(RichText::new("no messages yet: tackle logs every SendMessage its sessions send").weak());
+        return;
+    }
+    let mut pairs: std::collections::BTreeMap<(String, String), usize> = std::collections::BTreeMap::new();
+    for m in &f.traffic {
+        *pairs.entry((m.from.clone(), m.to.clone())).or_default() += 1;
+    }
+    ui.horizontal_wrapped(|ui| {
+        for ((a, b), n) in &pairs {
+            ui.label(RichText::new(format!("{} → {}: {}", a, b, n)).monospace());
+            ui.separator();
+        }
+    });
+    egui::ScrollArea::vertical().max_height(160.0).stick_to_bottom(true).show(ui, |ui| {
+        for m in f.traffic.iter().rev().take(100).collect::<Vec<_>>().into_iter().rev() {
+            ui.label(RichText::new(format!("{} {} → {}: {}", m.at, m.from, m.to, m.summary)).small().monospace());
+        }
+    });
+}
+
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("reg").args(args).creation_flags(0x0800_0000).output()
+}
+
+fn autostart_enabled() -> bool {
+    reg(&["query", RUN_KEY, "/v", "tackle"]).map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Starts tackle when you sign in to Windows, through the per-user Run key.
+fn set_autostart(on: bool) -> Result<(), String> {
+    let out = if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        reg(&["add", RUN_KEY, "/v", "tackle", "/t", "REG_SZ", "/d", &format!("\"{}\"", exe.display()), "/f"])
+    } else {
+        reg(&["delete", RUN_KEY, "/v", "tackle", "/f"])
+    };
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(format!("start with Windows: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => Err(format!("start with Windows: {}", e)),
+    }
+}
+
 struct Form {
     open: bool,
     name: String,
@@ -192,6 +244,8 @@ struct Form {
     people_open: bool,
     locks_open: bool,
     usage_open: bool,
+    traffic_open: bool,
+    preset: String,
     lock_words: String,
 }
 
@@ -202,6 +256,9 @@ struct App {
     _tray: Option<tray_icon::TrayIcon>,
     form: Form,
     focus_term: bool,
+    /// A selection in the terminal view: (anchor, end) as (row, col).
+    sel: Option<((u16, u16), (u16, u16))>,
+    autostart: bool,
     quitting: bool,
 }
 
@@ -260,18 +317,56 @@ impl App {
             Ok(RawWindowHandle::Win32(w)) => w.hwnd.get(),
             _ => 0,
         };
+        let fleet = fleet::boot(cc.egui_ctx.clone());
+        fleet.lock().unwrap().hwnd = hwnd;
         App {
-            fleet: fleet::boot(cc.egui_ctx.clone()),
+            fleet,
             selected: 0,
             hwnd,
             _tray: if hwnd != 0 { build_tray(&cc.egui_ctx, hwnd) } else { None },
-            form: Form { open: false, name: String::new(), project: String::new(), model: "opus".into(), role: Role::Worker, brief: String::new(), projects_open: false, project_name: String::new(), project_path: String::new(), people_open: false, locks_open: false, usage_open: false, lock_words: String::new() },
+            form: Form { open: false, name: String::new(), project: String::new(), model: "opus".into(), role: Role::Worker, brief: String::new(), projects_open: false, project_name: String::new(), project_path: String::new(), people_open: false, locks_open: false, usage_open: false, traffic_open: false, preset: String::new(), lock_words: String::new() },
+            sel: None,
+            autostart: autostart_enabled(),
             focus_term: true,
             quitting: false,
         }
     }
 
     fn new_session_form(&mut self, ui: &mut egui::Ui, f: &mut Fleet) {
+        ui.horizontal(|ui| {
+            ui.label("preset");
+            let before = self.form.preset.clone();
+            egui::ComboBox::from_id_salt("preset").selected_text(if self.form.preset.is_empty() { "none" } else { &self.form.preset }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.form.preset, String::new(), "none");
+                for p in &f.s.presets {
+                    ui.selectable_value(&mut self.form.preset, p.name.clone(), &p.name);
+                }
+            });
+            if self.form.preset != before {
+                if let Some(p) = f.s.presets.iter().find(|p| p.name == self.form.preset) {
+                    self.form.project = p.project.clone();
+                    self.form.model = p.model.clone();
+                    self.form.role = p.role;
+                    self.form.brief = p.brief.clone();
+                }
+            }
+            ui.add(egui::TextEdit::singleline(&mut self.form.preset).hint_text("preset name").desired_width(120.0));
+            if ui.button("Save as preset").on_hover_text("remember this project, model, role and brief under the preset name").clicked() {
+                let name = self.form.preset.trim().to_string();
+                if name.is_empty() {
+                    f.error = "give the preset a name".into();
+                } else {
+                    f.s.presets.retain(|p| p.name != name);
+                    f.s.presets.push(fleet::Preset { name: name.clone(), project: self.form.project.clone(), model: self.form.model.clone(), role: self.form.role, brief: self.form.brief.clone() });
+                    f.add_log(format!("human -> preset {} saved", name));
+                }
+            }
+            if ui.add_enabled(f.s.presets.iter().any(|p| p.name == self.form.preset), egui::Button::new("Delete preset")).clicked() {
+                let name = self.form.preset.clone();
+                f.s.presets.retain(|p| p.name != name);
+                self.form.preset.clear();
+            }
+        });
         ui.horizontal(|ui| {
             ui.label("project");
             let projects = projects::load(&f.data);
@@ -427,6 +522,9 @@ impl App {
                 ui.label(RichText::new(&p.name).strong());
                 ui.label(RichText::new(p.path.display().to_string()).weak());
             });
+            for u in units::load(&p.path) {
+                ui.label(RichText::new(format!("      {}: {} ({}, since {}){}", u.unit, u.holder, u.state, u.since, if u.note.is_empty() { String::new() } else { format!(" — {}", u.note) })).small());
+            }
         }
         ui.horizontal(|ui| {
             ui.label("name");
@@ -611,17 +709,49 @@ impl App {
         }
         let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
         let id = ui.make_persistent_id("terminal");
-        let resp = ui.interact(rect, id, egui::Sense::click());
+        let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
         if resp.clicked() || std::mem::take(&mut self.focus_term) {
             resp.request_focus();
+        }
+        // Drag to select; a click clears the selection.
+        let (rows, cols) = s.size;
+        let cell_at = |p: egui::Pos2| {
+            let r = (((p.y - rect.top()) / m.cell.y).floor().max(0.0) as u16).min(rows.saturating_sub(1));
+            let c = (((p.x - rect.left()) / m.cell.x).floor().max(0.0) as u16).min(cols.saturating_sub(1));
+            (r, c)
+        };
+        if resp.clicked() {
+            self.sel = None;
+        }
+        if let Some(p) = resp.interact_pointer_pos() {
+            if resp.drag_started() {
+                self.sel = Some((cell_at(p), cell_at(p)));
+            } else if resp.dragged() {
+                if let Some((a, _)) = self.sel {
+                    self.sel = Some((a, cell_at(p)));
+                }
+            }
         }
         let focused = resp.has_focus();
         let mut parser = s.parser.lock().unwrap();
         if focused {
             ui.memory_mut(|mem| mem.set_focus_lock_filter(id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }));
+            // With a selection, Ctrl+C copies it (like Windows Terminal); without one it
+            // goes to the session as an interrupt.
+            let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
+            let copy = self.sel.is_some() && events.iter().any(|e| matches!(e, egui::Event::Copy));
+            if copy {
+                if let Some((a, b)) = self.sel.take() {
+                    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+                    let text = parser.screen().contents_between(start.0, start.1, end.0, end.1 + 1);
+                    ui.ctx().copy_text(text);
+                }
+            }
+            let events: Vec<egui::Event> = events.into_iter().filter(|e| !(copy && matches!(e, egui::Event::Copy))).collect();
             let screen = parser.screen();
-            let bytes = ui.input(|i| term::input(&i.events, screen.application_cursor(), screen.bracketed_paste()));
+            let bytes = term::input(&events, screen.application_cursor(), screen.bracketed_paste());
             if !bytes.is_empty() {
+                self.sel = None;
                 parser.set_scrollback(0);
                 drop(parser);
                 s.write(&bytes);
@@ -637,6 +767,17 @@ impl App {
             }
         }
         term::paint(&ui.painter_at(rect), rect, &m, parser.screen(), focused);
+        if let Some((a, b)) = self.sel {
+            let (start, end) = if a <= b { (a, b) } else { (b, a) };
+            let painter = ui.painter_at(rect);
+            for r in start.0..=end.0 {
+                let c0 = if r == start.0 { start.1 } else { 0 };
+                let c1 = if r == end.0 { end.1 + 1 } else { cols };
+                let min = egui::pos2(rect.left() + c0 as f32 * m.cell.x, rect.top() + r as f32 * m.cell.y);
+                let max = egui::pos2(rect.left() + c1 as f32 * m.cell.x, min.y + m.cell.y);
+                painter.rect_filled(egui::Rect::from_min_max(min, max), 0.0, Color32::from_rgba_unmultiplied(120, 170, 255, 70));
+            }
+        }
         drop(parser);
         if let Some(what) = act {
             let name = f.sessions[self.selected].rec.name.clone();
@@ -692,6 +833,7 @@ impl eframe::App for App {
                 ui.toggle_value(&mut self.form.people_open, "People & log");
                 ui.toggle_value(&mut self.form.locks_open, "Locks");
                 ui.toggle_value(&mut self.form.usage_open, "Usage");
+                ui.toggle_value(&mut self.form.traffic_open, "Traffic");
                 ui.separator();
                 ui.label("window");
                 ui.add(egui::DragValue::new(&mut f.s.window).speed(10_000).range(10_000..=2_000_000)).on_hover_text("tokens shown as a full context bar");
@@ -702,6 +844,14 @@ impl eframe::App for App {
                     .on_hover_text("clear a session that has written BETWEEN UNITS in its state file once its context reaches this; 0 = never");
                 ui.label("cache ttl");
                 ui.add(egui::DragValue::new(&mut f.s.cache_ttl_min).range(0..=1440).suffix(" min")).on_hover_text("idle time after which a session's cache is assumed cold");
+                ui.separator();
+                ui.checkbox(&mut f.s.alerts, "alerts").on_hover_text("Windows notifications when a session needs input, holds a message, compacts, or exits on its own");
+                if ui.checkbox(&mut self.autostart, "start with Windows").changed() {
+                    if let Err(e) = set_autostart(self.autostart) {
+                        f.error = e;
+                        self.autostart = autostart_enabled();
+                    }
+                }
                 if !f.error.is_empty() {
                     ui.separator();
                     ui.label(RichText::new(&f.error).color(Color32::from_rgb(230, 90, 90)));
@@ -724,6 +874,9 @@ impl eframe::App for App {
             }
             if self.form.usage_open {
                 usage_panel(ui, &mut f);
+            }
+            if self.form.traffic_open {
+                traffic_panel(ui, &f);
             }
         });
         egui::SidePanel::left("sessions").default_width(260.0).show(ctx, |ui| {

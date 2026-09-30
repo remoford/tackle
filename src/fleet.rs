@@ -83,6 +83,31 @@ pub struct Saved {
     pub usage_every_min: u64,
     /// What the plan costs a month, to turn a share of the weekly limit into dollars.
     pub plan_usd_month: f64,
+    /// Windows notifications for sessions that need the human.
+    pub alerts: bool,
+    /// Sessions granted a writer token that must pull before they edit.
+    pub pull_owed: Vec<String>,
+    pub presets: Vec<Preset>,
+}
+
+/// A saved way to start a session: "start a corpus worker" in one step.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Preset {
+    pub name: String,
+    pub project: String,
+    pub model: String,
+    pub role: Role,
+    #[serde(default)]
+    pub brief: String,
+}
+
+/// One SendMessage a tackle session sent.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Sent {
+    pub at: String,
+    pub from: String,
+    pub to: String,
+    pub summary: String,
 }
 
 impl Default for Saved {
@@ -99,6 +124,9 @@ impl Default for Saved {
             sessions: Vec::new(),
             usage_every_min: 10,
             plan_usd_month: 200.0,
+            alerts: true,
+            pull_owed: Vec::new(),
+            presets: Vec::new(),
         }
     }
 }
@@ -121,6 +149,10 @@ pub struct Fleet {
     usage_capture: Option<Instant>,
     /// Process ids alive just before each run_in_background call, by tool_use_id.
     launch_before: BTreeMap<String, Vec<u32>>,
+    /// Messages tackle's sessions have sent each other (traffic.jsonl), newest last.
+    pub traffic: VecDeque<Sent>,
+    /// The main window, for notifications.
+    pub hwnd: isize,
     claude: PathBuf,
     settings: PathBuf,
     hr_settings: PathBuf,
@@ -162,6 +194,8 @@ pub fn boot(ctx: eframe::egui::Context) -> Shared {
     let _ = std::fs::write(data.join("port"), port.to_string());
     let s: Saved = read_json(&data.join("fleet.json")).unwrap_or_default();
     let dormant = s.sessions.clone();
+    let all_traffic: Vec<Sent> = std::fs::read_to_string(data.join("traffic.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let traffic: VecDeque<Sent> = all_traffic.into_iter().rev().take(500).rev().collect();
     let cutoff = chrono::Local::now() - chrono::Duration::days(8);
     let usage: Vec<crate::usage::Reading> = std::fs::read_to_string(data.join("usage.jsonl"))
         .unwrap_or_default()
@@ -182,6 +216,8 @@ pub fn boot(ctx: eframe::egui::Context) -> Shared {
         usage_next: Instant::now() + Duration::from_secs(30),
         usage_capture: None,
         launch_before: BTreeMap::new(),
+        traffic,
+        hwnd: 0,
         claude: session::find_claude(),
         settings,
         hr_settings,
@@ -513,6 +549,10 @@ impl Fleet {
             let edits = matches!(tool, "Edit" | "Write" | "MultiEdit" | "NotebookEdit") && !own_state;
             let writes = edits || (tool == "Bash" && has("git") && (has("commit") || has("push")));
             let holder = self.s.writers.get(&key(&cwd)).cloned();
+            if writes && holder.as_deref() == Some(name) && self.s.pull_owed.iter().any(|n| n == name) {
+                self.add_log(format!("{}: refused {} (must pull first)", name, clip(&session::tool_line(body), 80)));
+                return Some("tackle: you hold the writer token but haven't pulled since it was granted. Run `git pull` first, then edit.".into());
+            }
             if writes && holder.as_deref() != Some(name) {
                 let who = holder.map(|h| format!("{} holds", h)).unwrap_or_else(|| "nobody holds".into());
                 self.add_log(format!("{}: refused {} (writer token: {})", name, clip(&session::tool_line(body), 80), who));
@@ -570,6 +610,23 @@ impl Fleet {
     }
 
     fn after_tool(&mut self, name: &str, body: &Value) {
+        let command = body["tool_input"]["command"].as_str().unwrap_or_default();
+        if body["hook_event_name"] == "PostToolUse" && body["tool_name"] == "Bash" && command.contains("git") && command.contains("pull") {
+            self.s.pull_owed.retain(|n| n != name);
+        }
+        if body["hook_event_name"] == "PostToolUse" && body["tool_name"] == "SendMessage" {
+            let input = &body["tool_input"];
+            let summary = input["summary"].as_str().filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| input["message"].as_str().unwrap_or_default().lines().next().unwrap_or_default().to_string());
+            let sent = Sent { at: stamp(), from: name.to_string(), to: input["to"].as_str().unwrap_or_default().to_string(), summary: clip(&summary, 160) };
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.data.join("traffic.jsonl")) {
+                let _ = writeln!(f, "{}", serde_json::to_string(&sent).unwrap_or_default());
+            }
+            self.traffic.push_back(sent);
+            while self.traffic.len() > 500 {
+                self.traffic.pop_front();
+            }
+        }
         let id = body["tool_use_id"].as_str().unwrap_or_default();
         if let Some(l) = &mut self.lock {
             if l.session == name && l.tool_use_id == id {
@@ -592,6 +649,9 @@ impl Fleet {
 
     pub fn grant_writer(&mut self, project: &Path, to: &str, by: &str) {
         self.s.writers.insert(key(project), tk(to));
+        if !self.s.pull_owed.contains(&tk(to)) {
+            self.s.pull_owed.push(tk(to));
+        }
         self.add_log(format!("{} granted the writer token for {} to {}", by, project.display(), tk(to)));
     }
 
@@ -653,6 +713,9 @@ impl Fleet {
         for l in logs {
             self.add_log(l);
         }
+        if slow {
+            self.alert();
+        }
 
         // A background build keeps the lock until the processes it started are gone.
         if slow {
@@ -684,6 +747,43 @@ impl Fleet {
             self.save();
         }
         self.ctx.request_repaint();
+    }
+
+    /// Tells the human, once per condition, about sessions that need them.
+    fn alert(&mut self) {
+        let mut toasts = Vec::new();
+        for s in &mut self.sessions {
+            match s.alert() {
+                Some((key, text)) if key != s.alerted => {
+                    s.alerted = key;
+                    toasts.push(text);
+                }
+                Some(_) => {}
+                None => s.alerted.clear(),
+            }
+        }
+        for t in toasts {
+            self.add_log(format!("alert: {}", t));
+            if self.s.alerts {
+                crate::notify::toast(self.hwnd, "tackle", &t);
+            }
+        }
+    }
+
+    /// Clears sessions whose read files changed, at their next idle moment, then tells
+    /// each which files changed so it re-reads what its task needs.
+    pub fn refresh(&mut self, name: &str) -> Result<String, String> {
+        let s = self.find(name).ok_or_else(|| format!("no running session named {:?}", name))?;
+        if s.doing.stale.is_empty() {
+            return Ok(format!("{}: none of its read files changed", s.rec.name));
+        }
+        let files: Vec<String> = s.doing.stale.iter().map(|p| session::short_path(p, &s.rec.cwd)).collect();
+        s.pending.push("/clear".into());
+        s.pending.push(format!(
+            "[tackle] You were cleared because files you had read changed: {}. Re-read what your current task needs (see your state file), then carry on.",
+            files.join(", ")
+        ));
+        Ok(format!("{}: clear queued; {} changed files", s.rec.name, files.len()))
     }
 
     /// Takes a /usage reading on hr when it is idle and one is due: types /usage, reads

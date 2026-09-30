@@ -108,6 +108,15 @@ pub fn tools() -> Vec<Value> {
             &[],
             false,
         ),
+        tool(
+            "traffic",
+            "Messages tackle's sessions have sent each other (by SendMessage): when, from, to, and the summary line. Optionally only those to or from one session.",
+            json!({ "n": { "type": "integer", "description": "how many (default 20)" }, "name": { "type": "string", "description": "only messages to or from this session" } }),
+            &[],
+            false,
+        ),
+        tool("units", "Who holds which unit of work in a project, from its orchestration/assignments.md.", project.clone(), &["project"], false),
+        tool("list_presets", "Saved ways to start a session (project, model, role, brief), by name.", json!({}), &[], false),
         tool("log", "tackle's most recent actions, refusals and wake measurements.", json!({ "n": { "type": "integer", "description": "how many lines (default 20)" } }), &[], false),
         tool("clear", "Queue /clear for a session, typed the next time it is idle between turns.", name.clone(), &["name"], true),
         tool("show_context", "Queue /context for a session, typed when it is next idle. Read the result with screen.", name.clone(), &["name"], true),
@@ -156,6 +165,49 @@ pub fn tools() -> Vec<Value> {
         ),
         tool("release_writer", "Take back the writer token for a project (after the holder has committed and pushed).", project.clone(), &["project"], true),
         tool("release_lock", "Free the build lock, e.g. if its build died without tackle noticing.", json!({}), &[], true),
+        tool("forget_session", "Remove a stopped session from tackle's list. Its transcript and state file stay.", name.clone(), &["name"], true),
+        tool(
+            "refresh_stale",
+            "For a session whose read files changed since it read them: queue /clear for its next idle moment, then tell it which files changed so it re-reads what its task needs. Without a name, every stale session the requester may act on.",
+            json!({ "name": { "type": "string", "description": "one session; leave out for all you may act on" } }),
+            &[],
+            true,
+        ),
+        tool(
+            "assign_unit",
+            "Record in a project's orchestration/assignments.md that a session holds a unit of work, or change its state or note. The unit name comes from the book (e.g. part2-step3).",
+            json!({
+                "project": project["project"],
+                "unit": { "type": "string" },
+                "name": { "type": "string", "description": "the session holding it" },
+                "state": { "type": "string", "description": "working (default), review, blocked or done" },
+                "note": { "type": "string" },
+            }),
+            &["project", "unit", "name"],
+            true,
+        ),
+        tool("remove_unit", "Remove a unit's line from a project's assignments file.", json!({ "project": project["project"], "unit": { "type": "string" } }), &["project", "unit"], true),
+        tool(
+            "start_preset",
+            "Start a session from a saved preset. The requester becomes its manager.",
+            json!({ "preset": { "type": "string" }, "name": { "type": "string", "description": "optional session name" }, "brief": { "type": "string", "description": "optional, instead of the preset's brief" } }),
+            &["preset"],
+            true,
+        ),
+        tool("delete_preset", "Delete a preset. Human and delegates only.", json!({ "preset": { "type": "string" } }), &["preset"], true),
+        tool(
+            "save_preset",
+            "Save (or replace) a preset. Human and delegates only.",
+            json!({
+                "preset": { "type": "string" },
+                "project": project["project"],
+                "model": { "type": "string" },
+                "role": { "type": "string", "enum": ["worker", "orchestrator"] },
+                "brief": { "type": "string" },
+            }),
+            &["preset", "project"],
+            true,
+        ),
         tool("add_project", "Add a project (or change its directory). Human and delegates only.", json!({ "name": { "type": "string" }, "directory": { "type": "string" } }), &["name", "directory"], true),
         tool("remove_project", "Remove a project from tackle's list. Human and delegates only.", json!({ "name": { "type": "string" } }), &["name"], true),
         tool(
@@ -260,6 +312,107 @@ fn call(tool: &str, args: &Value, f: &mut Fleet) -> Result<String, String> {
             Ok(out.join("\n"))
         }
         "usage" => Ok(crate::usage::report(&f.usage, f.s.plan_usd_month)),
+        "traffic" => {
+            let n = args["n"].as_u64().unwrap_or(20) as usize;
+            let only = Some(tk(&name)).filter(|_| !name.is_empty());
+            let lines: Vec<String> = f
+                .traffic
+                .iter()
+                .rev()
+                .filter(|m| only.as_ref().map(|o| m.from == *o || tk(&m.to) == *o).unwrap_or(true))
+                .take(n)
+                .map(|m| format!("{} {} -> {}: {}", m.at, m.from, m.to, m.summary))
+                .collect();
+            Ok(if lines.is_empty() { "no messages".into() } else { lines.into_iter().rev().collect::<Vec<_>>().join("\n") })
+        }
+        "units" => {
+            let dir = crate::projects::resolve(&f.data, &arg("project"))?.path;
+            Ok(crate::units::render(&dir))
+        }
+        "list_presets" => Ok(if f.s.presets.is_empty() {
+            "no presets".into()
+        } else {
+            f.s.presets.iter().map(|p| format!("{}: {} {} in {}{}", p.name, p.model, p.role.label(), p.project, if p.brief.is_empty() { String::new() } else { format!("; brief: {}", clip(&p.brief, 80)) })).collect::<Vec<_>>().join("\n")
+        }),
+        "save_preset" => {
+            fleet_wide(f, "save a preset")?;
+            crate::projects::resolve(&f.data, &arg("project"))?;
+            let preset = crate::fleet::Preset {
+                name: arg("preset"),
+                project: arg("project"),
+                model: Some(arg("model")).filter(|m| !m.is_empty()).unwrap_or_else(|| "opus".into()),
+                role: if arg("role") == "orchestrator" { Role::Orchestrator } else { Role::Worker },
+                brief: arg("brief"),
+            };
+            f.s.presets.retain(|p| p.name != preset.name);
+            let label = preset.name.clone();
+            f.s.presets.push(preset);
+            done(f, format!("preset {} saved", label))
+        }
+        "delete_preset" => {
+            fleet_wide(f, "delete a preset")?;
+            let before = f.s.presets.len();
+            f.s.presets.retain(|p| p.name != arg("preset"));
+            if f.s.presets.len() == before {
+                return Err(format!("no preset {:?}", arg("preset")));
+            }
+            done(f, format!("preset {} deleted", arg("preset")))
+        }
+        "start_preset" => {
+            let manager = match &who {
+                Who::Human | Who::Delegate(_) => None,
+                Who::Session(n) => Some(n.clone()),
+                Who::Unknown { .. } => return Err(f.deny(&who, "start a session")),
+            };
+            let p = f.s.presets.iter().find(|p| p.name == arg("preset")).cloned().ok_or_else(|| format!("no preset {:?}; list_presets shows them", arg("preset")))?;
+            let brief = Some(arg("brief")).filter(|b| !b.is_empty()).or_else(|| Some(p.brief.clone()).filter(|b| !b.is_empty()));
+            let started = f.start_in(&p.project, &name, &p.model, p.role, manager, brief)?;
+            done(f, format!("started {} from preset {}", started, p.name))
+        }
+        "refresh_stale" => {
+            let targets: Vec<String> = if name.is_empty() {
+                f.sessions.iter().filter(|s| !s.doing.stale.is_empty() && s.activity != Activity::Exited).map(|s| s.rec.name.clone()).filter(|n| f.may_act(&who, n)).collect()
+            } else {
+                on_session(f, "refresh")?;
+                vec![tk(&name)]
+            };
+            if targets.is_empty() {
+                return Ok("no stale sessions you may act on".into());
+            }
+            let mut out = Vec::new();
+            for t in targets {
+                out.push(f.refresh(&t)?);
+            }
+            done(f, out.join("; "))
+        }
+        "assign_unit" | "remove_unit" => {
+            let dir = crate::projects::resolve(&f.data, &arg("project"))?.path;
+            let unit = arg("unit");
+            if tool == "assign_unit" {
+                on_session(f, "assign a unit to")?;
+                // Whatever isn't given keeps its value; a new holder starts a new "since".
+                let old = crate::units::load(&dir).into_iter().find(|u| u.unit == unit);
+                let same_holder = old.as_ref().map(|u| u.holder == tk(&name)).unwrap_or(false);
+                let state = Some(arg("state")).filter(|s| !s.is_empty()).or_else(|| old.as_ref().map(|u| u.state.clone())).unwrap_or_else(|| "working".into());
+                let note = Some(arg("note")).filter(|n| !n.is_empty()).or_else(|| old.as_ref().map(|u| u.note.clone())).unwrap_or_default();
+                let since = old.filter(|_| same_holder).map(|u| u.since).unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d %H:%M").to_string());
+                crate::units::upsert(&dir, crate::units::Unit { unit: unit.clone(), holder: tk(&name), state: state.clone(), since, note })?;
+                done(f, format!("unit {} in {}: {} ({})", unit, dir.display(), tk(&name), state))
+            } else {
+                let holder = crate::units::load(&dir).into_iter().find(|u| u.unit == unit).map(|u| u.holder);
+                let allowed = matches!(who, Who::Human | Who::Delegate(_)) || holder.as_deref().map(|h| f.may_act(&who, h)).unwrap_or(false);
+                if !allowed {
+                    return Err(f.deny(&who, &format!("remove unit {}", unit)));
+                }
+                let removed = crate::units::remove(&dir, &unit)?;
+                done(f, if removed { format!("unit {} removed", unit) } else { format!("no unit {}", unit) })
+            }
+        }
+        "forget_session" => {
+            on_session(f, "forget")?;
+            f.forget(&name)?;
+            done(f, format!("forgot {}", tk(&name)))
+        }
         "log" => {
             let n = args["n"].as_u64().unwrap_or(20) as usize;
             let lines: Vec<&String> = f.log.iter().rev().take(n).collect();

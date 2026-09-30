@@ -311,6 +311,12 @@ pub struct Session {
     pub hold: bool,
     /// Asked to exit; killed if still running at this time.
     pub stop_at: Option<Instant>,
+    /// Someone asked it to stop (so exiting isn't news).
+    pub stop_requested: bool,
+    /// The condition last alerted about, so each one alerts once.
+    pub alerted: String,
+    /// A message from another session is waiting on this session's approval.
+    pub held: bool,
     pub doing: Doing,
     pub size: (u16, u16),
 }
@@ -438,6 +444,9 @@ impl Session {
             brief,
             hold: false,
             stop_at: None,
+            stop_requested: false,
+            alerted: String::new(),
+            held: false,
             doing: Doing::default(),
             size,
         })
@@ -572,6 +581,7 @@ impl Session {
     /// so it signs off Remote Control instead of leaving a stale entry under its name.
     /// check_exit kills it if it is still running three seconds later.
     pub fn stop(&mut self) {
+        self.stop_requested = true;
         if self.activity == Activity::Exited || self.stop_at.is_some() {
             return;
         }
@@ -738,14 +748,46 @@ impl Session {
     /// Catches prompts that come before any hook fires, like Claude's folder-trust
     /// question on a session's first start in a new directory. Without this the session
     /// sits at "starting" and its brief never goes out.
+    ///
+    /// Also catches a message from another session held for approval (Claude holds them
+    /// when the sender runs in a different permission mode). Such a session stalls
+    /// silently until someone approves or declines it at its terminal.
     pub fn poll_screen(&mut self) {
-        if self.activity != Activity::Starting {
+        if self.activity == Activity::Exited {
             return;
         }
-        if self.parser.lock().unwrap().screen().contents().contains("trust this folder") {
+        let text = self.parser.lock().unwrap().screen().contents();
+        if self.activity == Activity::Starting && text.contains("trust this folder") {
             self.activity = Activity::Waiting;
             self.doing.notice = "folder trust: Claude asks whether to trust this project directory (answer in tackle, or ask tk-hr)".into();
         }
+        let held = text.contains("A message from another session needs your approval") || text.contains("Held message from another session");
+        if held && !self.held {
+            self.held = true;
+            self.activity = Activity::Waiting;
+            self.doing.notice = "held message: another session's message waits for approval at this session's terminal (tackle or Remote Control); it stalls until then".into();
+        } else if !held && self.held {
+            self.held = false;
+            if self.activity == Activity::Waiting {
+                self.activity = Activity::Idle;
+            }
+            self.doing.notice.clear();
+        }
+    }
+
+    /// What, if anything, the human should hear about now: a session waiting on input or
+    /// holding a message, a compaction, or an exit nobody asked for.
+    pub fn alert(&self) -> Option<(String, String)> {
+        if self.rec.compacted {
+            return Some(("compacted".into(), format!("{} compacted and was stopped; start it fresh from its state file", self.rec.name)));
+        }
+        if self.activity == Activity::Exited && !self.stop_requested && self.rec.role != Role::Hr {
+            return Some(("exited".into(), format!("{} exited without being asked to", self.rec.name)));
+        }
+        if self.activity == Activity::Waiting && !self.doing.notice.is_empty() {
+            return Some((format!("wait:{}", self.doing.notice), format!("{} needs input: {}", self.rec.name, self.doing.notice)));
+        }
+        None
     }
 
     /// A file it read is stale once its modification time is newer than when it read it
