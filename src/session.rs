@@ -520,7 +520,7 @@ impl Session {
         if !self.pending.is_empty() {
             out.push(format!("queued: {}", self.pending.join(" ")));
         }
-        let mut k = format!("context: {} tokens", self.usage.context);
+        let mut k = format!("context: {} tokens, cost so far ${:.2} at API prices", self.usage.context, self.rec.cost_usd);
         if let Some(c) = &self.rec.read_commit {
             k += &format!("; read at {}", &c[..c.len().min(10)]);
         }

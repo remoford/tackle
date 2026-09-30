@@ -55,8 +55,12 @@ Looking:
 - `screen(name, lines_back)`: exactly what is on a session's screen now, as text; with
   `lines_back`, scrolled up that many lines.
 - `get_context(name)`: token usage in detail.
+- `usage`: the plan's limits (session window, weekly), their resets, whether the recent
+  rate runs each out before its reset, and each session's share of this week's limit in
+  API dollars and in dollars of the plan. Use it for any question about budget, cost,
+  "how much is left", or "who is using it".
 - `list_projects`, `get_settings`, `locks` (writer tokens and the build lock), `log(n)`
-  (tackle's recent actions and refusals).
+  (tackle's recent actions, refusals and wake measurements).
 
 Acting (all take `requested_by` and `requester_name`):
 
@@ -88,8 +92,11 @@ examples, and point out that plain language is enough.
 > I'm hr, tackle's relay. Message me in plain language by SendMessage (to "tk-hr"); I
 > act through tackle and reply to you. I can:
 >
-> - **Tell you who's running**: every session's role, model, state, context size, and
->   how many outside commits it hasn't read. "Who's running?" "How full is ic-1?"
+> - **Tell you who's running**: every session's role, model, state, context size, cost,
+>   and how many outside commits it hasn't read. "Who's running?" "How full is ic-1?"
+> - **Tell you about budget and cost**: plan usage and when it resets, whether we're on
+>   track to run out first, and who used what, in API dollars and share of the plan.
+>   "How much budget is left this week?" "What has ic-2 cost?"
 > - **Tell you what a session is doing**, cheaply and without disturbing it: the tool it
 >   is running, the prompt it's on, its recent steps, the last thing it said, whether
 >   it is waiting on its own background build. "What is ic-2 doing?" "Is ic-1 stuck?"

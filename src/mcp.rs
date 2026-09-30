@@ -273,8 +273,9 @@ fn call(tool: &str, args: &Value, f: &mut Fleet) -> Result<String, String> {
                 "get_context" => {
                     let u = &s.usage;
                     Ok(format!(
-                        "{}: context {}; last message in {} / cache read {} / cache write {} / out {}; totals over {} messages: in {} / cache read {} / cache write {} / out {}; transcript {}",
+                        "{}: cost so far ${:.2} at API prices; context {}; last message in {} / cache read {} / cache write {} / out {}; totals over {} messages: in {} / cache read {} / cache write {} / out {}; transcript {}",
                         s.rec.name,
+                        s.rec.cost_usd,
                         u.context,
                         u.input,
                         u.cache_read,
