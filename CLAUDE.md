@@ -109,6 +109,16 @@ turns" is not "between tasks".
 - The writer token refuses `Write` without the token and allows it after a grant; the
   build lock refuses a second lock-word command; resume by Claude session id works
   after a tackle restart (all tested on a scratch repo with a Haiku worker).
+- Prompt caching across separately launched sessions (measured 2026-09-30 from eight
+  fresh tk-hr sessions): the tools + system prompt prefix (33,275 tokens) is read from
+  cache by every new session, even 22 minutes apart. CLAUDE.md is **not** shared: it
+  arrives in the first message, after the cached prefix, and was written to cache anew by
+  every session even when identical. So each fresh session or `/clear` pays the full cache
+  write for a CLAUDE.md-imported corpus; staggering clears saves nothing.
+- Costs: transcripts record each message's model and splits cache writes into 1-hour
+  (2x input) and 5-minute (1.25x) parts; `src/pricing.rs` prices them at API list rates.
+  A session's share of the weekly limit is estimated by splitting each rise in "Current
+  week (all models)" by what sessions spent; spending tackle can't see is "outside tackle".
 - Auto-compaction: this machine's user settings, `~/.claude/settings.json`, have
   `"autoCompactEnabled": false`. The Claude Code binary also honours `DISABLE_AUTO_COMPACT` and
   `DISABLE_COMPACT` (the latter also refuses `/compact`), and a `PreCompact` hook exiting
@@ -117,7 +127,10 @@ turns" is not "between tasks".
 ## Open questions
 
 - Do typed `/context` and `/clear` behave in a ConPTY session the same as over stream-json?
-- How well does prompt caching hold across sessions reloading the same 700k corpus?
-  tackle logs every wake after an idle gap with its cache read/write split, to measure it.
+- Could the corpus be shared through `--append-system-prompt-file` instead? The appended
+  text becomes part of the system prompt, which sessions do share, and Claude Code records
+  it at session start and re-sends it unchanged (so `/clear` would not re-read it; a
+  corpus change would mean a fresh session). Untested; one cheap test with two small
+  sessions would settle it. Don't run it without the user's go-ahead.
 - Can tackle tell when a session holds an incoming cross-session message for approval?
   It shows notifications and permission prompts; a held message may not raise either.

@@ -167,6 +167,7 @@ pub fn tools() -> Vec<Value> {
                 "context_window": { "type": "integer" },
                 "cache_ttl_min": { "type": "integer", "description": "minutes after which a session's cache is assumed cold" },
                 "usage_every_min": { "type": "integer", "description": "minutes between /usage readings (0 never)" },
+                "plan_usd_month": { "type": "number", "description": "what the plan costs a month, for plan-share dollars" },
                 "one_writer": { "type": "object", "description": "{\"project\": true/false}: require the writer token there" },
                 "lock_words": { "type": "array", "items": { "type": "string" }, "description": "words in a Bash command that take the build lock" },
             }),
@@ -177,7 +178,7 @@ pub fn tools() -> Vec<Value> {
 }
 
 fn session_line(f: &Fleet, s: &crate::session::Session) -> String {
-    let mut line = format!("{} ({} {}): {}, {}k", s.rec.name, s.rec.role.label(), s.rec.model, s.state_phrase(), s.usage.context / 1000);
+    let mut line = format!("{} ({} {}): {}, {}k, ${:.2}", s.rec.name, s.rec.role.label(), s.rec.model, s.state_phrase(), s.usage.context / 1000, s.rec.cost_usd);
     if let Some(n) = s.doing.stale.filter(|n| *n > 0) {
         line += &format!(", stale by {}", n);
     }
@@ -258,7 +259,7 @@ fn call(tool: &str, args: &Value, f: &mut Fleet) -> Result<String, String> {
             });
             Ok(out.join("\n"))
         }
-        "usage" => Ok(crate::usage::report(&f.usage)),
+        "usage" => Ok(crate::usage::report(&f.usage, f.s.plan_usd_month)),
         "log" => {
             let n = args["n"].as_u64().unwrap_or(20) as usize;
             let lines: Vec<&String> = f.log.iter().rev().take(n).collect();
@@ -331,6 +332,9 @@ fn call(tool: &str, args: &Value, f: &mut Fleet) -> Result<String, String> {
             }
             if let Some(v) = num("usage_every_min") {
                 f.s.usage_every_min = v;
+            }
+            if let Some(v) = args["plan_usd_month"].as_f64() {
+                f.s.plan_usd_month = v;
             }
             if let Some(words) = args["lock_words"].as_array() {
                 f.s.lock_words = words.iter().filter_map(|w| w.as_str()).map(str::to_string).collect();

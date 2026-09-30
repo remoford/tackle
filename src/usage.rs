@@ -25,6 +25,63 @@ pub struct Reading {
     /// Session name -> tokens it has used so far (input + cache writes + cache reads +
     /// output), as tackle counted them at this moment.
     pub sessions: BTreeMap<String, u64>,
+    /// Session name -> what it has cost so far at API prices.
+    #[serde(default)]
+    pub costs: BTreeMap<String, f64>,
+}
+
+/// The weekly limit the plan-share figures are measured against.
+pub const WEEK: &str = "Current week (all models)";
+
+/// Who used how much of a limit since its last reset: each rise in its percentage between
+/// two readings is split across sessions by what they spent at API prices in between. A
+/// rise with no tackle spending behind it goes to "outside tackle" (sessions tackle doesn't
+/// run). Returns (name, percent of the limit, API dollars), largest first.
+pub fn shares(readings: &[Reading], title: &str) -> Vec<(String, f64, f64)> {
+    let pct = |r: &Reading| r.limits.iter().find(|l| l.title == title).map(|l| l.percent);
+    // Start at the last reset: the last reading where the limit fell.
+    let mut start = 0;
+    for i in 1..readings.len() {
+        if let (Some(a), Some(b)) = (pct(&readings[i - 1]), pct(&readings[i])) {
+            if b < a - 0.5 {
+                start = i;
+            }
+        }
+    }
+    let mut share: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+    for w in readings[start..].windows(2) {
+        let (Some(a), Some(b)) = (pct(&w[0]), pct(&w[1])) else { continue };
+        let rise = (b - a).max(0.0);
+        let spent: BTreeMap<String, f64> = w[1]
+            .costs
+            .iter()
+            .map(|(n, &now)| {
+                let before = w[0].costs.get(n).copied().unwrap_or(0.0);
+                (n.clone(), if now >= before { now - before } else { now })
+            })
+            .filter(|(_, d)| *d > 0.0)
+            .collect();
+        let total: f64 = spent.values().sum();
+        if total <= 0.0 {
+            if rise > 0.0 {
+                share.entry("outside tackle".into()).or_default().0 += rise;
+            }
+            continue;
+        }
+        for (n, d) in spent {
+            let e = share.entry(n).or_default();
+            e.0 += rise * d / total;
+            e.1 += d;
+        }
+    }
+    let mut v: Vec<(String, f64, f64)> = share.into_iter().map(|(n, (p, d))| (n, p, d)).collect();
+    v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    v
+}
+
+/// Dollars of a monthly plan that one percent of the weekly limit is worth.
+pub fn plan_usd_per_week_pct(plan_usd_month: f64) -> f64 {
+    plan_usd_month * 12.0 / 52.0 / 100.0
 }
 
 /// Reads the limits from the text of hr's screen while /usage is showing.
@@ -139,7 +196,7 @@ pub fn used_between(a: &Reading, b: &Reading) -> BTreeMap<String, u64> {
 
 /// A few lines for hr: each limit, its reset, and when it runs out at the recent rate;
 /// then who used what since the first reading in the current session window.
-pub fn report(readings: &[Reading]) -> String {
+pub fn report(readings: &[Reading], plan_usd_month: f64) -> String {
     let Some(last) = readings.last() else { return "no /usage reading yet".into() };
     let mut out = vec![format!("plan usage at {}:", last.at.format("%H:%M"))];
     for l in &last.limits {
@@ -149,6 +206,16 @@ pub fn report(readings: &[Reading]) -> String {
             line += &format!("; at the last hour's rate 100% at {}{}", p.format("%a %H:%M"), if before_reset { " (BEFORE the reset)" } else { "" });
         }
         out.push(line);
+    }
+    let per_pct = plan_usd_per_week_pct(plan_usd_month);
+    let week = shares(readings, WEEK);
+    if !week.is_empty() {
+        let parts: Vec<String> = week
+            .iter()
+            .take(8)
+            .map(|(n, p, d)| if d > &0.0 { format!("{} {:.1}% (${:.2} API, ~${:.2} of plan)", n, p, d, p * per_pct) } else { format!("{} {:.1}% (~${:.2} of plan)", n, p, p * per_pct) })
+            .collect();
+        out.push(format!("this week's limit by session: {}", parts.join(", ")));
     }
     let window_start = last.at - CDuration::hours(5);
     if let Some(first) = readings.iter().find(|r| r.at >= window_start) {

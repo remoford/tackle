@@ -52,6 +52,10 @@ sessions need in context word for word. That brings rules a normal harness doesn
   doing, for a session's exact screen, to clear or start a session, and so on.
 - Reads `/usage` on tk-hr every few minutes and plots plan usage, which sessions used it,
   and when each limit runs out at the current rate.
+- Prices every session at API list rates, and estimates each one's share of the weekly
+  limit and of the monthly plan price (e.g. $200 for Max 20x). The estimate splits each
+  rise in the weekly percentage by what tackle's sessions spent; usage from sessions
+  outside tackle shows as "outside tackle".
 - Remembers sessions, settings, delegates and locks across restarts, and can resume a
   session by id or start it fresh from its state file.
 - Minimises to the system tray; closing the window keeps the sessions running.

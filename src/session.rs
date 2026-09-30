@@ -68,11 +68,14 @@ pub struct Record {
     /// A compacted session is dead: it may only be started fresh.
     #[serde(default)]
     pub compacted: bool,
+    /// What it has cost so far at API list prices, across clears and restarts.
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 impl Record {
     pub fn new(name: String, role: Role, cwd: PathBuf, model: String, manager: Option<String>) -> Record {
-        Record { tid: uuid::Uuid::new_v4().to_string(), name, role, cwd, model, manager, claude_id: String::new(), rc_url: String::new(), read_commit: None, compacted: false }
+        Record { tid: uuid::Uuid::new_v4().to_string(), name, role, cwd, model, manager, claude_id: String::new(), rc_url: String::new(), read_commit: None, compacted: false, cost_usd: 0.0 }
     }
 
     /// Where the session keeps its state file (see docs/orchestration.md).
@@ -115,16 +118,19 @@ pub struct Transcript {
     pub path: PathBuf,
     offset: u64,
     partial: Vec<u8>,
+    /// Messages before this offset were already costed (a resumed session's history).
+    costed_to: u64,
 }
 
 impl Transcript {
-    fn new(path: PathBuf) -> Self {
-        Transcript { path, offset: 0, partial: Vec::new() }
+    fn new(path: PathBuf, resumed: bool) -> Self {
+        let costed_to = if resumed { std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) } else { 0 };
+        Transcript { path, offset: 0, partial: Vec::new(), costed_to }
     }
 
     /// Reads whatever was appended since the last poll, keeping the latest assistant text
     /// in `said`. Returns true if a compaction boundary went by.
-    fn poll(&mut self, usage: &mut Usage, said: &mut String) -> bool {
+    fn poll(&mut self, usage: &mut Usage, said: &mut String, cost: &mut f64) -> bool {
         let Ok(mut f) = std::fs::File::open(&self.path) else { return false };
         if f.seek(SeekFrom::Start(self.offset)).is_err() {
             return false;
@@ -134,8 +140,12 @@ impl Transcript {
         self.offset += n as u64;
         self.partial.extend_from_slice(&buf);
         let mut compacted = false;
+        let base = self.offset - self.partial.len() as u64;
+        let mut consumed = 0u64;
         while let Some(i) = self.partial.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = self.partial.drain(..=i).collect();
+            consumed += line.len() as u64;
+            let before_costed = base + consumed <= self.costed_to;
             let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
             if v["type"] == "system" && v["subtype"] == "compact_boundary" {
                 compacted = true;
@@ -168,6 +178,9 @@ impl Transcript {
                 usage.total_cache_read += usage.cache_read;
                 usage.total_cache_write += usage.cache_write;
                 usage.total_output += usage.output;
+                if !before_costed {
+                    *cost += crate::pricing::cost(v["message"]["model"].as_str().unwrap_or_default(), u).unwrap_or(0.0);
+                }
             }
         }
         compacted
@@ -576,7 +589,7 @@ impl Session {
                 if let Some(p) = v["transcript_path"].as_str() {
                     let p = PathBuf::from(p);
                     if self.transcript.as_ref().map(|t| &t.path) != Some(&p) {
-                        self.transcript = Some(Transcript::new(p));
+                        self.transcript = Some(Transcript::new(p, source == "resume"));
                         self.usage = Usage::default();
                         self.history.push((now, 0));
                     }
@@ -654,7 +667,7 @@ impl Session {
     pub fn poll_transcript(&mut self, now: f64) -> Option<String> {
         let t = self.transcript.as_mut()?;
         let before = self.usage.messages;
-        if t.poll(&mut self.usage, &mut self.doing.said) {
+        if t.poll(&mut self.usage, &mut self.doing.said, &mut self.rec.cost_usd) {
             self.contaminated = true;
         }
         if self.usage.messages == before {

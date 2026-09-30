@@ -81,6 +81,8 @@ pub struct Saved {
     pub sessions: Vec<Record>,
     /// Minutes between /usage readings taken on hr; 0 means never.
     pub usage_every_min: u64,
+    /// What the plan costs a month, to turn a share of the weekly limit into dollars.
+    pub plan_usd_month: f64,
 }
 
 impl Default for Saved {
@@ -96,6 +98,7 @@ impl Default for Saved {
             delegates: Vec::new(),
             sessions: Vec::new(),
             usage_every_min: 10,
+            plan_usd_month: 200.0,
         }
     }
 }
@@ -734,7 +737,11 @@ impl Fleet {
                         (s.rec.name.clone(), u.total_input + u.total_cache_write + u.total_cache_read + u.total_output)
                     })
                     .collect();
-                let reading = crate::usage::Reading { at: chrono::Local::now(), limits, sessions };
+                let mut costs: BTreeMap<String, f64> = self.sessions.iter().map(|s| (s.rec.name.clone(), s.rec.cost_usd)).collect();
+                for r in &self.dormant {
+                    costs.entry(r.name.clone()).or_insert(r.cost_usd);
+                }
+                let reading = crate::usage::Reading { at: chrono::Local::now(), limits, sessions, costs };
                 use std::io::Write;
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.data.join("usage.jsonl")) {
                     let _ = writeln!(f, "{}", serde_json::to_string(&reading).unwrap_or_default());

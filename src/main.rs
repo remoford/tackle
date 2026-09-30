@@ -6,6 +6,7 @@ mod git;
 mod hooks;
 mod icon;
 mod mcp;
+mod pricing;
 mod procs;
 mod projects;
 mod session;
@@ -89,6 +90,9 @@ fn usage_panel(ui: &mut egui::Ui, f: &mut Fleet) {
         if ui.small_button("read now").clicked() {
             f.usage_now();
         }
+        ui.separator();
+        ui.label("plan");
+        ui.add(egui::DragValue::new(&mut f.s.plan_usd_month).range(0.0..=10_000.0).prefix("$").suffix("/mo")).on_hover_text("what your plan costs a month; turns a share of the weekly limit into dollars");
     });
     let Some(last) = f.usage.last().cloned() else {
         ui.label(RichText::new("no reading yet: tackle reads /usage on hr when hr is idle").weak());
@@ -127,6 +131,35 @@ fn usage_panel(ui: &mut egui::Ui, f: &mut Fleet) {
             let target = egui::pos2(x(pr).min(rect.right()), y(100.0));
             p.add(egui::Shape::dashed_line(&[*end, target], egui::Stroke::new(1.0, if late { red } else { blue }), 4.0, 3.0));
         }
+    }
+    // Who used this week's limit: each rise in the weekly percentage split by what each
+    // session spent at API prices; a rise with no tackle spending is "outside tackle".
+    let week = usage::shares(&f.usage, usage::WEEK);
+    if !week.is_empty() {
+        let per_pct = usage::plan_usd_per_week_pct(f.s.plan_usd_month);
+        let api: f64 = week.iter().map(|w| w.2).sum();
+        let pct: f64 = week.iter().map(|w| w.1).sum();
+        ui.label(RichText::new(format!(
+            "this week since tackle's first reading: {:.1}% of the weekly limit ≈ ${:.2} of your plan; tackle's sessions ${:.2} at API prices",
+            pct,
+            pct * per_pct,
+            api
+        ))
+        .strong());
+        egui::Grid::new("week_shares").striped(true).show(ui, |ui| {
+            ui.label(RichText::new("session").weak());
+            ui.label(RichText::new("% of week").weak());
+            ui.label(RichText::new("≈ plan $").weak());
+            ui.label(RichText::new("API $").weak());
+            ui.end_row();
+            for (name, p, d) in &week {
+                ui.label(RichText::new(name).monospace());
+                ui.label(format!("{:.2}%", p));
+                ui.label(format!("${:.2}", p * per_pct));
+                ui.label(if *d > 0.0 { format!("${:.2}", d) } else { "-".into() });
+                ui.end_row();
+            }
+        });
     }
     // Who used the tokens since the start of the current session window.
     if let Some(first) = f.usage.iter().find(|r| r.at >= last.at - chrono::Duration::hours(5)) {
@@ -436,6 +469,7 @@ impl App {
                         if let Some(h) = s.usage.hit_rate() {
                             ui.label(RichText::new(format!("cache {:.0}%", h * 100.0)).weak());
                         }
+                        ui.label(RichText::new(format!("${:.2}", s.rec.cost_usd)).weak()).on_hover_text("what it has cost so far at API list prices");
                         if !s.pending.is_empty() {
                             ui.label(RichText::new(format!("queued {}", s.pending.join(" "))).weak());
                         }
